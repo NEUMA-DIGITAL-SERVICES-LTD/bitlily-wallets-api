@@ -41,7 +41,7 @@ class HealthController {
         // Schema is owned by migrations — synchronize stays off everywhere.
         synchronize: false,
         migrationsRun: true,
-        migrations: [__dirname + '/../migrations/*{.ts,.js}'],
+        migrations: [__dirname + '/migrations/*{.ts,.js}'],
       }),
     }),
     ScheduleModule.forRoot(),

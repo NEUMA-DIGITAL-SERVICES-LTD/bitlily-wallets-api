@@ -9,6 +9,6 @@ export const AppDataSource = new DataSource({
   type: 'postgres',
   url: process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/bitlily_crypto',
   entities: ALL_ENTITIES,
-  migrations: ['migrations/*.ts'],
+  migrations: ['src/migrations/*.ts'],
   synchronize: false,
 });

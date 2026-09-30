@@ -234,12 +234,17 @@ export class TatumProvider implements BlockchainProvider {
   }
 
   async createAddressSubscription(address: string, chain: Chain): Promise<SubscriptionResult> {
+    const ingressUrl = process.env.WEBHOOK_INGRESS_URL;
+    if (!ingressUrl) {
+      this.logger.debug('WEBHOOK_INGRESS_URL unset — skipping address subscription');
+      return { subscriptionId: '' };
+    }
     const { data } = await this.http.post('/v4/subscription', {
       type: 'ADDRESS_EVENT',
       attr: {
         address,
         chain: chain.toUpperCase(),
-        url: process.env.WEBHOOK_INGRESS_URL ?? '',
+        url: ingressUrl,
       },
     });
     return { subscriptionId: data.id ?? data.subscriptionId ?? '' };
