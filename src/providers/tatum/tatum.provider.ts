@@ -171,9 +171,10 @@ export class TatumProvider implements BlockchainProvider {
     switch (chain) {
       case 'BTC':
       case 'LTC': {
+        // Tatum returns outputs[].value in SATOSHIS (1000 = 0.00001 BTC).
         const outputs = (data.outputs ?? data.vout ?? []).map((o: any) => ({
           address: o.address ?? o.scriptPubKey?.addresses?.[0] ?? '',
-          amount: String(o.value ?? '0'),
+          amount: fromRaw(String(o.value ?? '0'), 8),
         }));
         return {
           txid, chain, outputs,

@@ -1,15 +1,26 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Cron } from '@nestjs/schedule';
 import axios from 'axios';
 import { createHmac } from 'crypto';
+import { LessThanOrEqual, Repository } from 'typeorm';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { OutboundEvent } from '../../database/entities/outbound-event.entity';
 import { errMsg } from '../../common/errors';
 
+/** ~4h of exponential retries (1,2,4,8…128 min) before dead-lettering. */
+const MAX_ATTEMPTS = 8;
+
 /**
- * Outbound notifier — pushes confirmed events to the main Bitlily app.
+ * Outbound notifier — transactional outbox for events owed to the main
+ * Bitlily app. Every event is persisted BEFORE delivery is attempted, then
+ * retried by a cron sweep with exponential backoff. A consumer that is down
+ * no longer loses deposit confirmations — the worst case is delay.
+ *
  * Payloads are HMAC-SHA256 signed (X-Webhook-Signature) so the main app can
- * verify authenticity. Retries are the caller's concern for now — events are
- * persisted (webhook_events / transactions) so a retry sweep can replay them.
+ * verify authenticity. Consumers MUST be idempotent: events may be delivered
+ * more than once if a response is lost after processing.
  */
 @Injectable()
 export class NotifierService {
@@ -17,13 +28,17 @@ export class NotifierService {
   private readonly url: string;
   private readonly secret: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    @InjectRepository(OutboundEvent)
+    private readonly outbox: Repository<OutboundEvent>,
+  ) {
     this.url = config.get('webhook.mainAppUrl') ?? '';
     this.secret = config.get('webhook.signingSecret') ?? '';
   }
 
+  /** Persist the event, then attempt immediate delivery. */
   async notify(event: string, tx: Transaction): Promise<void> {
-    if (!this.url) return;
     const body = {
       event,
       data: {
@@ -40,18 +55,65 @@ export class NotifierService {
         reference: tx.reference,
       },
     };
-    const raw = JSON.stringify(body);
+    const row = await this.outbox.save(
+      this.outbox.create({
+        event,
+        transactionId: tx.id,
+        payload: body,
+      }),
+    );
+    if (!this.url) {
+      // No consumer configured (local dev) — leave pending; the sweep would
+      // burn attempts pointlessly. Mark sent so the outbox stays clean.
+      await this.outbox.update(row.id, { status: 'sent', sentAt: new Date() });
+      return;
+    }
+    await this.deliver(row);
+  }
+
+  /** Retry sweep — picks up pending events past their backoff gate. */
+  @Cron('* * * * *')
+  async sweep(): Promise<void> {
+    if (!this.url) return;
+    const due = await this.outbox.find({
+      where: { status: 'pending', nextAttemptAt: LessThanOrEqual(new Date()) },
+      order: { createdAt: 'ASC' },
+      take: 50,
+    });
+    for (const row of due) await this.deliver(row);
+  }
+
+  private async deliver(row: OutboundEvent): Promise<void> {
+    const raw = JSON.stringify(row.payload);
     const signature = createHmac('sha256', this.secret).update(raw).digest('hex');
     try {
       await axios.post(this.url, raw, {
         headers: {
           'Content-Type': 'application/json',
           'X-Webhook-Signature': `sha256=${signature}`,
+          'X-Webhook-Event-Id': row.id,
         },
         timeout: 10_000,
       });
+      await this.outbox.update(row.id, { status: 'sent', sentAt: new Date() });
     } catch (e) {
-      this.logger.error(`Outbound webhook failed for tx ${tx.id}: ${errMsg(e)}`);
+      const attempts = row.attempts + 1;
+      const dead = attempts >= MAX_ATTEMPTS;
+      await this.outbox.update(row.id, {
+        attempts,
+        status: dead ? 'dead' : 'pending',
+        lastError: errMsg(e).slice(0, 2000),
+        nextAttemptAt: new Date(Date.now() + 2 ** attempts * 60_000),
+      });
+      if (dead) {
+        this.logger.error(
+          `Outbound event ${row.id} dead-lettered after ${attempts} attempts: ${errMsg(e)}`,
+        );
+      } else {
+        this.logger.warn(
+          `Outbound event ${row.id} attempt ${attempts}/${MAX_ATTEMPTS} failed: ${errMsg(e)}`,
+        );
+      }
     }
   }
 }

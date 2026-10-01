@@ -84,11 +84,23 @@ export class DepositPollerService {
             Math.abs(parseFloat(o.amount) - delta) < 1e-8,
         ),
       );
+
+      // Tatum's address-history entries carry blockNumber but NOT a
+      // confirmations field — derive from chain tip (same as webhook path).
+      if (hit?.blockNumber != null && !hit.confirmations) {
+        try {
+          const head = await this.provider.getLatestBlock(dep.chain as any);
+          if (head > 0) hit.confirmations = Math.max(0, head - hit.blockNumber + 1);
+        } catch { /* stays pending until derivable */ }
+      }
+
       const txid = hit?.txid ?? `poll:${dep.address}:${asset.code}:${observed}`;
-      const confirmed = hit ? this.isConfirmed(hit.confirmations, dep.chain) : true;
+      const req = this.requiredConfirmations(dep.chain);
+      const confirmed = hit ? hit.confirmations >= req : true;
       // Balance reads are post-confirmation for account chains; UTXO balance
       // may include mempool — when we have a real txid we keep the
       // confirmation policy, without one we credit (documented tradeoff).
+      const reportConfs = hit?.confirmations ?? (confirmed ? req : 0);
 
       const tx = await this.em.transaction(async (m) => {
         // Lock just this row (no join — FOR UPDATE can't hit nullable
@@ -101,6 +113,29 @@ export class DepositPollerService {
         const freshDelta = parseFloat(observed) - parseFloat(fresh.creditedAmount);
         if (freshDelta <= 0) return null;
 
+        // A pending record from an earlier poll shares this txid — advance
+        // its confirmation count instead of inserting a duplicate.
+        const existing = await m.findOne(Transaction, {
+          where: { txid, address: dep.address, asset: asset.code },
+        });
+        if (existing) {
+          existing.confirmations = reportConfs;
+          existing.blockNumber = hit?.blockNumber ?? existing.blockNumber;
+          if (confirmed && existing.status !== 'confirmed') {
+            existing.status = 'confirmed';
+            // Credit only THIS tx's recorded amount; a newer uncredited
+            // remainder re-detects on the next poll under a fresh txid.
+            await this.ledger.postEntry(
+              m, dep.account.wallet, existing, 'deposit_confirmed',
+              existing.amount, 'credit',
+            );
+            fresh.creditedAmount =
+              (parseFloat(fresh.creditedAmount) + parseFloat(existing.amount)).toFixed(8);
+            await m.save(fresh);
+          }
+          return m.save(existing);
+        }
+
         const t = await m.save(
           m.create(Transaction, {
             wallet: dep.account.wallet,
@@ -111,8 +146,8 @@ export class DepositPollerService {
             address: dep.address,
             amount: freshDelta.toFixed(8),
             status: confirmed ? 'confirmed' : 'pending',
-            confirmations: hit?.confirmations ?? 0,
-            requiredConfirmations: this.requiredConfirmations(dep.chain),
+            confirmations: reportConfs,
+            requiredConfirmations: req,
             blockNumber: hit?.blockNumber ?? null,
             reference: dep.reference,
             raw: { detectedVia: 'polling', observedBalance: observed },
@@ -133,8 +168,8 @@ export class DepositPollerService {
       );
     } catch (e) {
       if (errCode(e) === '23505') {
-        // Already-detected tx (e.g. pending UTXO awaiting confirmations).
-        // Advance creditedAmount so we stop re-detecting the same delta.
+        // The webhook path recorded this txid first (cross-strategy race).
+        // Sync our delta marker so polling doesn't re-detect the same funds.
         await this.addresses.update(dep.id, { creditedAmount: observed });
       } else {
         this.logger.error(`Poll failed for ${dep.address}: ${errMsg(e)}`);
