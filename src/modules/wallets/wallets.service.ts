@@ -19,6 +19,7 @@ import {
   ChainAccountMaterial,
 } from '../../providers/provider.interface';
 import { LedgerService } from '../../ledger/ledger.service';
+import { errMsg } from '../../common/errors';
 
 @Injectable()
 export class WalletsService {
@@ -148,7 +149,7 @@ export class WalletsService {
           dep.subscriptionId = sub.subscriptionId;
           await em.save(dep);
         } catch (e) {
-          this.logger.warn(`Subscription failed for ${address}: ${e.message}`);
+          this.logger.warn(`Subscription failed for ${address}: ${errMsg(e)}`);
         }
       }
       return dep;

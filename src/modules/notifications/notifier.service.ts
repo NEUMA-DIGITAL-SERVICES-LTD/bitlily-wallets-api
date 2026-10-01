@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { createHmac } from 'crypto';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { errMsg } from '../../common/errors';
 
 /**
  * Outbound notifier — pushes confirmed events to the main Bitlily app.
@@ -50,7 +51,7 @@ export class NotifierService {
         timeout: 10_000,
       });
     } catch (e) {
-      this.logger.error(`Outbound webhook failed for tx ${tx.id}: ${e.message}`);
+      this.logger.error(`Outbound webhook failed for tx ${tx.id}: ${errMsg(e)}`);
     }
   }
 }

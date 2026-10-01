@@ -12,6 +12,7 @@ import {
 } from '../../providers/provider.interface';
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
+import { errCode, errMsg } from '../../common/errors';
 
 /**
  * Credit-minimal deposit detection — the free-plan strategy.
@@ -129,12 +130,12 @@ export class DepositPollerService {
         confirmed ? 'deposit.confirmed' : 'deposit.pending', tx,
       );
     } catch (e) {
-      if (String(e?.code) === '23505') {
+      if (errCode(e) === '23505') {
         // Already-detected tx (e.g. pending UTXO awaiting confirmations).
         // Advance creditedAmount so we stop re-detecting the same delta.
         await this.addresses.update(dep.id, { creditedAmount: observed });
       } else {
-        this.logger.error(`Poll failed for ${dep.address}: ${e.message}`);
+        this.logger.error(`Poll failed for ${dep.address}: ${errMsg(e)}`);
       }
     }
   }

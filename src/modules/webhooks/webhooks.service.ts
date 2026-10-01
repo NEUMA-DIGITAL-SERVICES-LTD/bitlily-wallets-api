@@ -13,6 +13,7 @@ import {
 } from '../../providers/provider.interface';
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
+import { errMsg } from '../../common/errors';
 
 interface TatumAddressEvent {
   address?: string;
@@ -75,7 +76,7 @@ export class WebhooksService {
     } catch (e) {
       await this.events.update(
         { provider: 'tatum', externalEventKey: key },
-        { status: 'failed', error: e.message },
+        { status: 'failed', error: errMsg(e) },
       );
       throw e;
     }
@@ -201,7 +202,7 @@ export class WebhooksService {
         });
         await this.notifier.notify('deposit.confirmed', tx);
       } catch (e) {
-        this.logger.error(`Sweep failed for tx ${tx.txid}: ${e.message}`);
+        this.logger.error(`Sweep failed for tx ${tx.txid}: ${errMsg(e)}`);
       }
     }
   }
