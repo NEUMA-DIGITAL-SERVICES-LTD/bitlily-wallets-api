@@ -21,12 +21,17 @@ when it's confirmed) and all blockchain I/O. The provider is behind a
 ### Deposit flow (Selly-style)
 
 1. `POST /api/v1/wallets` — wallet per `externalUserId` (one account per enabled asset)
-2. `POST /api/v1/wallets/:id/addresses` `{asset, reference?}` — deposit address;
-   `reference` ties it to an order/invoice (per-payment addresses)
-3. Tatum fires `POST /api/v1/webhooks/tatum` on incoming funds
-4. We **re-fetch the tx on-chain** (webhook body is a hint, never proof),
-   record it `pending`, then `confirmed` at per-chain confirmation thresholds
-5. On confirmation: idempotent ledger credit + HMAC-signed webhook to the main app
+2. `POST /api/v1/wallets/:id/addresses` `{asset, reference?, expiresInMinutes?}` —
+   deposit address; `reference` ties it to an order/invoice, `expiresInMinutes`
+   bounds monitoring cost (default 60)
+3. Detection runs in one of two modes (`DEPOSIT_DETECTION`):
+   - `polling` (default): DepositPoller checks active-address balances every
+     ~2 min and credits deltas — credit-minimal, works on Tatum's free plan
+   - `webhook`: Tatum pushes to `POST /api/v1/webhooks/tatum` — lower latency,
+     needs paid plan + public `WEBHOOK_INGRESS_URL`
+4. In webhook mode we **re-fetch the tx on-chain** (payload is a hint, never
+   proof); in polling mode the balance itself is the on-chain evidence
+5. On confirmation: idempotent ledger credit + HMAC-signed webhook to main app
 
 ### Withdrawal flow
 

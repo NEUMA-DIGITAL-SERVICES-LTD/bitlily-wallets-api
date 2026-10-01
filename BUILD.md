@@ -51,28 +51,35 @@ plaintext. This is the line between a demo and a product.
 
 The money-in path; the reason the service exists.
 
-- [ ] Set `WEBHOOK_INGRESS_URL` to a public URL (staging tunnel / deployed URL)
-      so `createAddressSubscription` actually registers with Tatum
-- [ ] Verify `normalizeTx` output extraction on **real testnet transactions**
-      per chain — send testnet BTC/LTC/ETH/SOL/TRX to generated addresses and
-      confirm the parsed `outputs[]` match reality (shapes differ per chain;
-      this is the highest-value test in the system)
-- [ ] Confirm the full loop: subscription → webhook → `webhook_events` dedupe
-      → on-chain re-fetch → `pending` tx → confirmations → `confirmed` +
-      ledger credit → outbound HMAC webhook to main app
-- [ ] Verify the 2-min sweeper (`sweepPending`) recovers a deposit when the
-      webhook is dropped (simulate by blocking the webhook, wait for sweep)
-- [ ] Verify replay safety: POST the same webhook payload twice → second is
-      `duplicate`, no double credit. Spoof test: payload for a tx that never
-      paid our address → `rejected`, no credit.
+**Detection strategy — two modes, chosen by `DEPOSIT_DETECTION`:**
 
-**Done when:** a real testnet deposit to a generated address credits the
-ledger once, exactly once, within confirmation policy — with and without
-the webhook firing.
+- `polling` (default, **credit-minimal — free-plan friendly**): the
+  `DepositPoller` checks balances of active, unexpired deposit addresses
+  every ~2 min and credits the delta. Cost ≈ 1–3 credits/poll/address and
+  **zero when idle**. Per-order addresses get `expiresInMinutes` (default 60)
+  so the poll set stays bounded; expired addresses are auto-retired.
+- `webhook`: Tatum v4 subscriptions push to `/api/v1/webhooks/tatum`.
+  Lower latency, but each subscription costs ~50 credits/day + 50/event and
+  free plans cap at 100 notifications/month. Use once on a paid plan with
+  `WEBHOOK_INGRESS_URL` set.
 
-**Landmines:** per-chain confirmation thresholds; reorgs (a `confirmed` tx
-can go back to `pending` — the upsert already reflects this); Tatum webhook
-payloads are unsigned — verification-by-refetch is the security boundary.
+- [x] Polling detector built (`modules/monitoring/deposit-poller.service.ts`)
+      — delta-credit via `credited_amount`, idempotent on synthetic
+      `poll:{addr}:{asset}:{balance}` txid + unique constraints
+- [ ] Verify deposit detection on **real testnet transactions** per chain —
+      send testnet BTC/LTC/ETH/SOL/TRX to generated addresses and confirm
+      detection → `pending`/`confirmed` → ledger credit → outbound webhook
+- [ ] Confirm full loop works in each mode
+- [ ] Verify replay safety (same webhook twice → `duplicate`, one credit) and
+      spoof safety (payload for a tx that never paid us → `rejected`)
+
+**Done when:** a real testnet deposit credits the ledger once, exactly once,
+within confirmation policy — in polling mode, and in webhook mode with and
+without the webhook arriving.
+
+**Landmines:** per-chain confirmation thresholds; reorgs; webhook payloads
+unsigned (verification-by-refetch is the boundary); UTXO balance reads may
+include mempool (mitigated by txid attribution when available).
 
 ---
 
@@ -180,6 +187,8 @@ Postman collection, without reading source.
 
 - [ ] Signed-off asset×chain matrix (USDT on *which* chains exactly?)
 - [ ] Who owns the Tatum subscription + KMS infra? (should be client)
-- [ ] Per-deposit-address monitoring costs scale with users — confirm PayGo tier
+- [ ] Free plan is 3 RPS / 100K lifetime credits / 100 notifications per
+      month — polling mode keeps us viable at low volume, but mainnet
+      launch needs a paid plan decision
 - [ ] Dust/consolidation thresholds per asset
 - [ ] Who operates sweeps post-handover — them (docs) or us (retainer)?

@@ -249,4 +249,31 @@ export class TatumProvider implements BlockchainProvider {
     });
     return { subscriptionId: data.id ?? data.subscriptionId ?? '' };
   }
+
+  /**
+   * Per-address tx history — implemented for UTXO chains where Tatum offers
+   * a direct endpoint. EVM/SOL/TRON return [] (their per-address history
+   * needs indexer APIs that cost extra credits); deposit detection on those
+   * chains relies on balance deltas, not tx enumeration.
+   */
+  async getAddressTransactions(
+    address: string,
+    asset: AssetDef,
+    limit = 10,
+  ): Promise<ProviderTx[]> {
+    const path = CHAIN_PATH[asset.chain];
+    if (asset.chain !== 'BTC' && asset.chain !== 'LTC') return [];
+    try {
+      const { data } = await this.http.get(
+        `/v3/${path}/transaction/address/${address}?pageSize=${limit}`,
+      );
+      const list = Array.isArray(data) ? data : data?.txs ?? [];
+      return list.map((t: any) =>
+        this.normalizeTx(t, t.hash ?? t.txid ?? '', asset.chain),
+      );
+    } catch (err: any) {
+      if (err.response?.status === 404) return [];
+      throw err;
+    }
+  }
 }

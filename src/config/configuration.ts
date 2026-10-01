@@ -18,6 +18,12 @@ export const webhookConfig = registerAs('webhook', () => ({
   signingSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
 }));
 
+export const detectionConfig = registerAs('detection', () => ({
+  strategy: (process.env.DEPOSIT_DETECTION ?? 'polling') as 'polling' | 'webhook',
+  pollIntervalMs: parseInt(process.env.DEPOSIT_POLL_INTERVAL_MS ?? '120000', 10),
+  addressTtlMinutes: parseInt(process.env.DEPOSIT_ADDRESS_TTL_MINUTES ?? '60', 10),
+}));
+
 export const confirmationsConfig = registerAs('confirmations', () => ({
   BTC: parseInt(process.env.CONFIRMATIONS_BTC ?? '2', 10),
   LTC: parseInt(process.env.CONFIRMATIONS_LTC ?? '4', 10),

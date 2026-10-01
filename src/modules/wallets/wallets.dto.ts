@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 
 export class CreateWalletDto {
   @ApiProperty({ description: 'The user ID in the main Bitlily application' })
@@ -21,6 +21,17 @@ export class GenerateAddressDto {
   @IsString()
   @IsOptional()
   reference?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Minutes until this address expires (stops deposit polling). Omit for a reusable address.',
+    default: 60,
+  })
+  @IsInt()
+  @Min(1)
+  @Max(10080)
+  @IsOptional()
+  expiresInMinutes?: number;
 }
 
 export class AssetParamDto {

@@ -26,7 +26,9 @@ export class WalletsController {
     summary: 'Generate a deposit address (optionally per-order via reference)',
   })
   generateAddress(@Param('id') id: string, @Body() dto: GenerateAddressDto) {
-    return this.wallets.generateDepositAddress(id, dto.asset, dto.reference);
+    return this.wallets.generateDepositAddress(
+      id, dto.asset, dto.reference, dto.expiresInMinutes,
+    );
   }
 
   @Get(':id/addresses')

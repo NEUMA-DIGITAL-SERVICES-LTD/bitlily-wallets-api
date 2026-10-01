@@ -6,6 +6,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { DataSource, Repository } from 'typeorm';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
@@ -30,6 +31,7 @@ export class WalletsService {
     @InjectRepository(Transaction) private readonly txs: Repository<Transaction>,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
     private readonly ledger: LedgerService,
+    private readonly config: ConfigService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -97,9 +99,13 @@ export class WalletsService {
     walletId: string,
     assetCode: string,
     reference?: string,
+    expiresInMinutes?: number,
   ): Promise<DepositAddress> {
     const asset = getAsset(assetCode);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
+
+    const ttl = expiresInMinutes ?? this.config.get<number>('detection.addressTtlMinutes');
+    const expiresAt = ttl ? new Date(Date.now() + ttl * 60_000) : null;
 
     return this.dataSource.transaction(async (em) => {
       const account = await em.findOne(WalletAccount, {
@@ -126,11 +132,14 @@ export class WalletsService {
           asset: asset.code,
           derivationIndex: index,
           reference,
+          expiresAt,
         }),
       );
 
-      // Register provider-side monitoring (non-fatal if unsupported/available).
-      if (this.provider.createAddressSubscription) {
+      // Webhook mode registers provider-side monitoring; polling mode relies
+      // on the DepositPoller — no per-address subscription cost.
+      const useWebhooks = this.config.get('detection.strategy') === 'webhook';
+      if (useWebhooks && this.provider.createAddressSubscription) {
         try {
           const sub = await this.provider.createAddressSubscription(
             address,

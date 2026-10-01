@@ -49,6 +49,14 @@ export class DepositAddress {
   @Column({ name: 'subscription_id', nullable: true })
   subscriptionId: string;
 
+  /** Cumulative amount already credited from this address (delta detection). */
+  @Column({ name: 'credited_amount', type: 'numeric', precision: 38, scale: 18, default: '0' })
+  creditedAmount: string;
+
+  /** For per-order addresses: polling stops after this. NULL = no expiry. */
+  @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
+  expiresAt: Date;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

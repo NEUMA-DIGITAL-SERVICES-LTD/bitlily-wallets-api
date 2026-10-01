@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApiKeyGuard, Public } from './common/api-key.guard';
 import {
   confirmationsConfig,
+  detectionConfig,
   serviceConfig,
   tatumConfig,
   webhookConfig,
@@ -15,6 +16,7 @@ import { LedgerModule } from './ledger/ledger.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { WalletsModule } from './modules/wallets/wallets.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
+import { MonitoringModule } from './modules/monitoring/monitoring.module';
 import { ProvidersModule } from './providers/providers.module';
 
 @Controller('api/v1/health')
@@ -30,7 +32,7 @@ class HealthController {
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig],
+      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -50,6 +52,7 @@ class HealthController {
     WalletsModule,
     TransactionsModule,
     WebhooksModule,
+    MonitoringModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ApiKeyGuard }],

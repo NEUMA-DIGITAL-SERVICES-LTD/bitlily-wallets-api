@@ -80,4 +80,16 @@ export interface BlockchainProvider {
 
   /** Register address monitoring (provider-side webhook subscription). */
   createAddressSubscription?(address: string, chain: Chain): Promise<SubscriptionResult>;
+
+  /**
+   * Recent transactions paying an address — used to attribute a detected
+   * deposit to a txid when polling. May return [] on chains where the
+   * provider lacks a cheap per-address history endpoint; callers must
+   * tolerate missing attribution (synthetic keys still keep idempotency).
+   */
+  getAddressTransactions?(
+    address: string,
+    asset: AssetDef,
+    limit?: number,
+  ): Promise<ProviderTx[]>;
 }
