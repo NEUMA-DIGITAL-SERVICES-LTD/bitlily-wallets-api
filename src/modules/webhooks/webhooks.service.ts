@@ -14,6 +14,7 @@ import {
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
 import { errMsg } from '../../common/errors';
+import { getAsset } from '../../config/assets';
 
 interface TatumAddressEvent {
   address?: string;
@@ -93,10 +94,20 @@ export class WebhooksService {
     }
 
     // VERIFY, don't trust: pull the real tx from the provider.
-    const chainTx = await this.provider.getTransaction(payload.txId, dep.chain as any);
+    const asset = getAsset(dep.asset);
+    const chainTx = await this.provider.getTransaction(payload.txId, dep.chain as any, asset);
     if (!chainTx) {
       this.logger.warn(`tx ${payload.txId} not yet visible on ${dep.chain} — will retry via sweep`);
       return { status: 'deferred' };
+    }
+    // Refine confirmations from chain tip (provider may only report "mined").
+    if (chainTx.blockNumber != null) {
+      try {
+        const head = await this.provider.getLatestBlock(dep.chain as any);
+        if (head > 0) {
+          chainTx.confirmations = Math.max(0, head - chainTx.blockNumber + 1);
+        }
+      } catch { /* keep provider-reported count */ }
     }
     const output = chainTx.outputs.find(
       (o) => o.address.toLowerCase() === payload.address.toLowerCase(),
@@ -180,8 +191,17 @@ export class WebhooksService {
     });
     for (const tx of pending) {
       try {
-        const chainTx = await this.provider.getTransaction(tx.txid, tx.chain as any);
+        const asset = getAsset(tx.asset);
+        const chainTx = await this.provider.getTransaction(tx.txid, tx.chain as any, asset);
         if (!chainTx) continue;
+        if (chainTx.blockNumber != null) {
+          try {
+            const head = await this.provider.getLatestBlock(tx.chain as any);
+            if (head > 0) {
+              chainTx.confirmations = Math.max(0, head - chainTx.blockNumber + 1);
+            }
+          } catch { /* keep provider-reported count */ }
+        }
         const required = tx.requiredConfirmations || this.requiredConfirmations(tx.chain);
         if (chainTx.confirmations < required) {
           tx.confirmations = chainTx.confirmations;

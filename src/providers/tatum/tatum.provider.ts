@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { AssetDef, Chain } from '../../config/assets';
+import { parseErc20Transfers } from './evm-logs';
 import {
   BlockchainProvider,
   ChainAccountMaterial,
@@ -109,19 +110,48 @@ export class TatumProvider implements BlockchainProvider {
     return String(data.balance ?? data ?? '0');
   }
 
-  async getTransaction(txid: string, chain: Chain): Promise<ProviderTx | null> {
+  async getTransaction(txid: string, chain: Chain, asset?: AssetDef): Promise<ProviderTx | null> {
     const path = CHAIN_PATH[chain];
     try {
       const { data } = await this.http.get(`/v3/${path}/transaction/${txid}`);
-      return this.normalizeTx(data, txid, chain);
+      return this.normalizeTx(data, txid, chain, asset);
     } catch (err: any) {
       if (err.response?.status === 404) return null;
       throw err;
     }
   }
 
-  /** Normalizes wildly different per-chain tx shapes into ProviderTx. */
-  private normalizeTx(data: any, txid: string, chain: Chain): ProviderTx {
+  /** Current chain height (block number / slot) per family. */
+  async getLatestBlock(chain: Chain): Promise<number> {
+    const path = CHAIN_PATH[chain];
+    switch (chain) {
+      case 'BTC':
+      case 'LTC': {
+        const { data } = await this.http.get(`/v3/${path}/info`);
+        return Number(data.blocks ?? data.headers ?? 0);
+      }
+      case 'SOL': {
+        const { data } = await this.http.get(`/v3/${path}/info`);
+        return Number(data.blockHeight ?? data.slot ?? 0);
+      }
+      case 'TRON': {
+        const { data } = await this.http.get(`/v3/${path}/current/block`);
+        return Number(data.block_header?.raw_data?.number ?? data.blockNumber ?? 0);
+      }
+      default: {
+        // EVM: block/current returns the latest block number
+        const { data } = await this.http.get(`/v3/${path}/block/current`);
+        return Number(data ?? 0);
+      }
+    }
+  }
+
+  /**
+   * Normalizes wildly different per-chain tx shapes into ProviderTx.
+   * `asset` scopes token-output extraction — for token assets, outputs come
+   * from contract events, not native value fields.
+   */
+  private normalizeTx(data: any, txid: string, chain: Chain, asset?: AssetDef): ProviderTx {
     switch (chain) {
       case 'BTC':
       case 'LTC': {
@@ -140,14 +170,37 @@ export class TatumProvider implements BlockchainProvider {
       }
       case 'SOL': {
         const meta = data.result ?? data;
-        const outs = (meta.transaction?.message?.accountKeys ?? []).map(
-          (k: any, i: number) => ({
-            address: typeof k === 'string' ? k : k.pubkey,
-            amount: String(
-              ((meta.meta?.postBalances?.[i] ?? 0) - (meta.meta?.preBalances?.[i] ?? 0)) / 1e9,
-            ),
-          }),
-        ).filter((o: any) => parseFloat(o.amount) > 0);
+        let outs: { address: string; amount: string }[];
+        if (asset?.type === 'token') {
+          // SPL token transfers live in pre/postTokenBalances, not lamports.
+          const keys = meta.transaction?.message?.accountKeys ?? [];
+          const addrAt = (i: number) => {
+            const k = keys[i];
+            return typeof k === 'string' ? k : k?.pubkey ?? '';
+          };
+          const pre = new Map<number, number>();
+          for (const b of meta.meta?.preTokenBalances ?? []) {
+            if (b.mint === asset.contract) pre.set(b.accountIndex, Number(b.uiTokenAmount?.amount ?? 0) / 10 ** (b.uiTokenAmount?.decimals ?? asset.decimals));
+          }
+          outs = (meta.meta?.postTokenBalances ?? [])
+            .filter((b: any) => b.mint === asset.contract)
+            .map((b: any) => ({
+              address: addrAt(b.accountIndex),
+              amount: String(
+                Number(b.uiTokenAmount?.uiAmount ?? 0) - (pre.get(b.accountIndex) ?? 0),
+              ),
+            }))
+            .filter((o: any) => parseFloat(o.amount) > 0);
+        } else {
+          outs = (meta.transaction?.message?.accountKeys ?? []).map(
+            (k: any, i: number) => ({
+              address: typeof k === 'string' ? k : k.pubkey,
+              amount: String(
+                ((meta.meta?.postBalances?.[i] ?? 0) - (meta.meta?.preBalances?.[i] ?? 0)) / 1e9,
+              ),
+            }),
+          ).filter((o: any) => parseFloat(o.amount) > 0);
+        }
         return {
           txid, chain, outputs: outs,
           confirmations: meta.confirmationStatus === 'finalized' || meta.confirmationStatus === 'confirmed' ? 32 : 0,
@@ -176,18 +229,34 @@ export class TatumProvider implements BlockchainProvider {
       }
       default: {
         // EVM family: ETH / POLYGON
-        const to = data.to ?? '';
-        const value = data.value != null ? String(Number(data.value) / 1e18) : '0';
+        const logs = data.logs ?? data.receipt?.logs ?? [];
+        let outputs: { address: string; amount: string }[];
+        if (asset?.type === 'token') {
+          // Token deposits are contract events — tx.to is the token contract.
+          outputs = parseErc20Transfers(logs, asset.decimals)
+            .filter(
+              (t) =>
+                !asset.contract ||
+                t.contract === asset.contract.toLowerCase(),
+            )
+            .map((t) => ({ address: t.to, amount: t.amount }));
+        } else {
+          const to = data.to ?? '';
+          const value = data.value != null ? String(Number(data.value) / 1e18) : '0';
+          outputs = to ? [{ address: to.toLowerCase(), amount: value }] : [];
+        }
+        // Confirmations are the mined flag here; callers refine via
+        // getLatestBlock(chain) - blockNumber + 1.
+        const mined = data.blockNumber != null && data.status !== false && data.status !== '0x0';
         return {
-          txid, chain,
-          outputs: to ? [{ address: to, amount: value }] : [],
-          confirmations: data.blockNumber ? 1 : 0, // refined by chain-head check
+          txid, chain, outputs,
+          confirmations: mined ? 1 : 0,
           blockNumber: data.blockNumber ?? null,
           fee: data.gasUsed != null && data.gasPrice != null
             ? String((Number(data.gasUsed) * Number(data.gasPrice)) / 1e18)
             : undefined,
           status: data.status === false || data.status === '0x0' ? 'failed'
-            : data.blockNumber ? 'confirmed' : 'pending',
+            : mined ? 'confirmed' : 'pending',
           raw: data,
         };
       }

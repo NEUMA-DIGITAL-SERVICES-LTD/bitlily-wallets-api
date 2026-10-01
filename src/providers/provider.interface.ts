@@ -70,8 +70,16 @@ export interface BlockchainProvider {
   /** On-chain balance of an address for an asset, in human units. */
   getAddressBalance(address: string, asset: AssetDef): Promise<string>;
 
-  /** Fetch a transaction by hash — the verification step for webhooks. */
-  getTransaction(txid: string, chain: Chain): Promise<ProviderTx | null>;
+  /**
+   * Fetch a transaction by hash — the verification step for webhooks.
+   * `asset` scopes output extraction: for token assets, on-chain outputs are
+   * parsed from contract Transfer events (tx.to is the contract, not the
+   * recipient).
+   */
+  getTransaction(txid: string, chain: Chain, asset?: AssetDef): Promise<ProviderTx | null>;
+
+  /** Current chain tip — used to compute real confirmation counts. */
+  getLatestBlock(chain: Chain): Promise<number>;
 
   estimateFee(asset: AssetDef, toAddress: string, amount: string): Promise<FeeEstimate>;
 
