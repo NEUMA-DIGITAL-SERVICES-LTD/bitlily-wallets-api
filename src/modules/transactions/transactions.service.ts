@@ -45,11 +45,12 @@ export class TransactionsService {
     const asset = getAsset(dto.asset);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${dto.asset}`);
 
+    // Accounts are per-chain — a token send signs via its chain's account.
     const account = await this.accounts.findOne({
-      where: { wallet: { id: dto.walletId }, asset: asset.code },
+      where: { wallet: { id: dto.walletId }, chain: asset.chain },
       relations: ['wallet'],
     });
-    if (!account) throw new NotFoundException(`No ${asset.code} account on wallet`);
+    if (!account) throw new NotFoundException(`No ${asset.chain} account on wallet`);
 
     // Guard: ledger must cover the send.
     const balance = await this.ledger.getBalance(dto.walletId, asset.code);

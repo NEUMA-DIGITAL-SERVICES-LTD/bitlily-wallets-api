@@ -6,6 +6,7 @@ import {
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
+  Unique,
 } from 'typeorm';
 import { WalletAccount } from './wallet-account.entity';
 
@@ -16,7 +17,13 @@ export type DepositAddressStatus = 'active' | 'used' | 'retired';
  * supports Selly-style per-order/per-invoice addresses — pass the main app's
  * order/invoice ID and it is echoed back in deposit webhooks.
  */
+/**
+ * The watched pair is (address, asset): on account-model chains (SOL) the
+ * same base address legitimately appears once per asset, and on EVM a
+ * token deposit address may coincide with the native one.
+ */
 @Entity('deposit_addresses')
+@Unique(['address', 'asset'])
 export class DepositAddress {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -25,7 +32,7 @@ export class DepositAddress {
   @JoinColumn({ name: 'wallet_account_id' })
   account: WalletAccount;
 
-  @Index({ unique: true })
+  @Index()
   @Column()
   address: string;
 

@@ -13,12 +13,15 @@ import { Wallet } from './wallet.entity';
 import { DepositAddress } from './deposit-address.entity';
 
 /**
- * One row per (wallet, asset). Holds the provider-side references needed to
- * derive deposit addresses. Secrets (mnemonics/keys) are NEVER stored here —
- * only xpubs and public addresses. Signing material lives in KMS/env.
+ * One row per (wallet, chain) — NOT per asset. Assets on the same chain
+ * (ETH, USDT_ETH, USDC_ETH) share one xpub and one derivation counter;
+ * per-asset accounts would independently derive index 0 → same address →
+ * collisions on the deposit_addresses unique index.
+ * Secrets (mnemonics/keys) are NEVER stored here — only xpubs and public
+ * addresses. Signing material lives in KMS/env.
  */
 @Entity('wallet_accounts')
-@Unique(['wallet', 'asset'])
+@Unique(['wallet', 'chain'])
 export class WalletAccount {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -27,11 +30,7 @@ export class WalletAccount {
   @JoinColumn({ name: 'wallet_id' })
   wallet: Wallet;
 
-  /** Canonical asset code from the registry, e.g. BTC, USDT_TRON, USDC_MATIC. */
-  @Column()
-  asset: string;
-
-  /** Chain this asset settles on, e.g. BTC, LTC, ETH, POLYGON, SOL, TRON. */
+  /** Settlement chain, e.g. BTC, LTC, ETH, POLYGON, SOL, TRON. */
   @Column()
   chain: string;
 

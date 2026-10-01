@@ -22,14 +22,13 @@ export class Init1700000000000 implements MigrationInterface {
       CREATE TABLE "wallet_accounts" (
         "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
         "wallet_id" uuid,
-        "asset" character varying NOT NULL,
         "chain" character varying NOT NULL,
         "xpub" character varying,
         "base_address" character varying,
         "next_derivation_index" integer NOT NULL DEFAULT 0,
         "created_at" TIMESTAMP NOT NULL DEFAULT now(),
         CONSTRAINT "PK_wallet_accounts" PRIMARY KEY ("id"),
-        CONSTRAINT "UQ_wallet_account_asset" UNIQUE ("wallet_id", "asset"),
+        CONSTRAINT "UQ_wallet_account_chain" UNIQUE ("wallet_id", "chain"),
         CONSTRAINT "FK_wa_wallet" FOREIGN KEY ("wallet_id")
           REFERENCES "wallets"("id") ON DELETE CASCADE
       )`);
@@ -51,7 +50,10 @@ export class Init1700000000000 implements MigrationInterface {
           REFERENCES "wallet_accounts"("id") ON DELETE CASCADE
       )`);
     await queryRunner.query(
-      `CREATE UNIQUE INDEX "IDX_deposit_address" ON "deposit_addresses" ("address")`,
+      `CREATE INDEX "IDX_deposit_address" ON "deposit_addresses" ("address")`,
+    );
+    await queryRunner.query(
+      `CREATE UNIQUE INDEX "UQ_deposit_address_asset" ON "deposit_addresses" ("address", "asset")`,
     );
 
     await queryRunner.query(`
