@@ -36,7 +36,10 @@ export const ASSET_REGISTRY: AssetDef[] = [
   // Stablecoins — confirm per-chain contract addresses against the signed-off
   // asset matrix before mainnet; testnet deployments use provider test assets.
   { code: 'USDT_TRON', chain: 'TRON', type: 'token', decimals: 6, contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' },
-  { code: 'USDT_ETH', chain: 'ETH', type: 'token', decimals: 6, contract: '0xdAC17F958D2ee523a2206206994597C13D831ec7' },
+  { code: 'USDT_ETH', chain: 'ETH', type: 'token', decimals: 6, contract: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+    // Test-deployed mock on Sepolia (no official Tether testnet deployment
+    // exists). Supply held by the TESTNET_PK_ETH test wallet.
+    testnetContract: '0x57484c2f11202d766f9653e491a4c7930699f727' },
   { code: 'USDT_MATIC', chain: 'POLYGON', type: 'token', decimals: 6, contract: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F' },
   { code: 'USDC_ETH', chain: 'ETH', type: 'token', decimals: 6, contract: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
     // Official Circle testnet USDC on Sepolia (faucet.circle.com).
