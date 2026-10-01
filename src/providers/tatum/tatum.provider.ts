@@ -330,6 +330,31 @@ export class TatumProvider implements BlockchainProvider {
       return { txid: data.txId ?? data.txid ?? data.hash };
     }
 
+    // UTXO chains (BTC/LTC) have a fundamentally different send schema:
+    // inputs are explicit fromAddress/privateKey pairs and change must be
+    // directed back to the sender. TESTNET_FROM_{chain} holds the address
+    // matching TESTNET_PK_{chain}. Under KMS, signatureId replaces the key.
+    if (params.asset.chain === 'BTC' || params.asset.chain === 'LTC') {
+      const fromAddr = process.env[`TESTNET_FROM_${params.asset.chain}`];
+      const pk = process.env[`TESTNET_PK_${params.asset.chain}`];
+      if (!fromAddr || (!pk && !useKms)) {
+        throw new Error(
+          `UTXO send requires TESTNET_FROM_${params.asset.chain} + ` +
+          `TESTNET_PK_${params.asset.chain} (or KMS)`,
+        );
+      }
+      const utxoBody = {
+        fromAddress: [
+          useKms ? { address: fromAddr, signatureId: params.fromAccountId }
+                 : { address: fromAddr, privateKey: pk },
+        ],
+        to: [{ address: params.toAddress, value: Number(params.amount) }],
+        changeAddress: fromAddr,
+      };
+      const { data } = await this.http.post(`/v3/${path}/transaction`, utxoBody);
+      return { txid: data.txId ?? data.txid ?? data.hash };
+    }
+
     const body: Record<string, unknown> = {
       to: params.toAddress,
       amount: params.amount,
