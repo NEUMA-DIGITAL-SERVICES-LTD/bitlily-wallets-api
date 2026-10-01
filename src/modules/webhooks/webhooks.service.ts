@@ -149,7 +149,9 @@ export class WebhooksService {
     confirmed: boolean,
   ): Promise<Transaction> {
     const existing = await m.findOne(Transaction, {
-      where: { txid: payload.txId, address: dep.address, asset: dep.asset },
+      // direction:'inbound' — same txid can exist as outbound when a send
+      // lands on our own watched address; don't swallow the deposit row.
+      where: { txid: payload.txId, address: dep.address, asset: dep.asset, direction: 'inbound' },
     });
     if (existing) {
       // Update confirmation progress; a reorg can also un-confirm — reflect it.

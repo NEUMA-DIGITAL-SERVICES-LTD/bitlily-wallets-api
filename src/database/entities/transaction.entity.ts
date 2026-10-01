@@ -20,7 +20,7 @@ export type TxStatus = 'pending' | 'confirmed' | 'failed';
  * recorded once even if the webhook fires multiple times.
  */
 @Entity('transactions')
-@Unique(['txid', 'address', 'asset'])
+@Unique(['txid', 'address', 'asset', 'direction'])
 export class Transaction {
   @PrimaryGeneratedColumn('uuid')
   id: string;

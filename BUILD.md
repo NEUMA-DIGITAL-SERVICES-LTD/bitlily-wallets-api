@@ -5,6 +5,18 @@ system in a verifiable state. Every phase has a **Done when** gate — do not
 move on until it passes. Time estimates assume one senior engineer.
 
 **Status legend:** `[x]` done · `[~]` scaffolded/needs production hardening · `[ ]` not started
+**"Verified"** = exercised against a live testnet chain, not just code review.
+
+### Testnet verification snapshot (2026-10-01)
+
+| Asset | Deposit detected→confirmed→credited | Send broadcast→debited→confirmed |
+|---|---|---|
+| BTC (testnet3) | ✅ real txid, 2/2 confs | ✅ broadcast + ledger debit |
+| ETH (Sepolia) | ✅ | ✅ round-trip closed |
+| SOL (devnet) | ✅ | — untested |
+| USDC_ETH (Sepolia) | ✅ | ✅ round-trip closed |
+| USDT_ETH (Sepolia mock) | ✅ | ✅ broadcast, confs climbing |
+| LTC / POLYGON / TRON / other tokens | — registered only | — registered only |
 
 ---
 
@@ -66,12 +78,19 @@ The money-in path; the reason the service exists.
 - [x] Polling detector built (`modules/monitoring/deposit-poller.service.ts`)
       — delta-credit via `credited_amount`, idempotent on synthetic
       `poll:{addr}:{asset}:{balance}` txid + unique constraints
-- [ ] Verify deposit detection on **real testnet transactions** per chain —
-      send testnet BTC/LTC/ETH/SOL/TRX to generated addresses and confirm
-      detection → `pending`/`confirmed` → ledger credit → outbound webhook
-- [ ] Confirm full loop works in each mode
-- [ ] Verify replay safety (same webhook twice → `duplicate`, one credit) and
-      spoof safety (payload for a tx that never paid us → `rejected`)
+- [x] Verify deposit detection on **real testnet transactions** — verified
+      2026-10-01 on BTC (real txid attribution + 2-conf policy), ETH, SOL,
+      USDC (Circle Sepolia), USDT (self-deployed mock). Surfaced and fixed:
+      raw base-unit token balances (÷10^decimals), BTC outputs in satoshis
+      (÷10^8), pending UTXO txs advancing to confirmed via chain-tip-derived
+      confirmations (Tatum history entries carry `blockNumber`, no
+      `confirmations` field), same-chain multi-asset addresses (per-chain
+      `WalletAccount` + (address, asset) watch pairs)
+- [ ] Confirm full loop works in **webhook mode** — polling verified;
+      webhook path is coded and unit-tested but never run against a live
+      Tatum subscription
+- [~] Replay safety verified (synthetic-txid dedupe + unit tests);
+      spoof safety covered by webhook unit tests only — unverified live
 
 **Done when:** a real testnet deposit credits the ledger once, exactly once,
 within confirmation policy — in polling mode, and in webhook mode with and
@@ -85,17 +104,29 @@ include mempool (mitigated by txid attribution when available).
 
 ## Phase 3 — Withdrawals end-to-end (~1 day)
 
-- [ ] Ledger debit + `pending` transaction row in one DB transaction
-      **before** broadcast (already structured — verify with a killed-process
-      test: crash between debit and broadcast must leave a reconcilable row)
-- [ ] Broadcast via provider (KMS path), persist txid, track confirmations
-      via sweeper until `confirmed`, notify main app
-- [ ] Insufficient-balance guard works; failed broadcasts → `failed` +
-      `withdrawal_reversal` ledger credit
-- [ ] Fee estimation endpoint returns sane values per chain on testnet
+- [x] Ledger debit + `pending` transaction row in one DB transaction
+      **before** broadcast — fixed 2026-10-01 (the code had broadcast→record
+      ordering despite the comment claiming otherwise; a crash there would
+      have moved funds with no record). Broadcast failure now marks the row
+      `failed` + posts `withdrawal_reversal`. A `pending:{uuid}` txid row
+      = crashed between debit and broadcast → ops reconciliation case.
+      **The killed-process test itself is still unrun.**
+- [~] Broadcast via provider, persist txid, track confirmations via
+      `OutboundStatusService` sweeper until `confirmed`, notify main app —
+      verified on ETH + 2 ERC-20s + BTC. Signing is `TESTNET_PK_*` env
+      path; **KMS path (`TATUM_USE_KMS`) is coded but never exercised**,
+      and SOL/TRON send shapes are untested.
+- [~] Insufficient-balance guard works (verified live — Tatum-side and
+      our guard both fire); failed-broadcast reversal implemented, exercised
+      only via real failed broadcasts pre-fix, not a controlled test
+- [~] Fee estimation endpoint returns sane values on ETH (verified live
+      during send debugging); BTC/LTC `estimateFee` is stub-shaped — the
+      real fix needed may be per-UTXO fee modeling. Untested on other chains.
 
 **Done when:** testnet withdrawal debits ledger, broadcasts, confirms, and
-a failed broadcast cleanly reverses the debit.
+a failed broadcast cleanly reverses the debit — **met on EVM assets; BTC
+broadcast verified with ledger debit (confirmation pending block production);
+controlled failure test + KMS path still open.**
 
 ---
 
@@ -123,8 +154,10 @@ system needs. Flag it in handover docs.
 
 ## Phase 5 — Reliability hardening (~1 day)
 
-- [ ] Outbound webhook retries: persisted outbox rows + exponential backoff
-      (currently single-shot fire-and-log)
+- [x] Outbound webhook retries: persisted `outbound_events` outbox +
+      exponential backoff (8 attempts ≈ 4h, then dead-lettered) +
+      `X-Webhook-Event-Id` for consumer dedupe. Verified: events delivered
+      live; failure/backoff path covered by construction, not crash-tested
 - [ ] Reconciliation job: daily — ledger sums vs on-chain balances per chain
       vs Tatum-reported state; alert on divergence
 - [ ] Structured logging (pino) + request IDs; no secrets/PII in logs
@@ -186,6 +219,14 @@ Postman collection, without reading source.
 ## Open questions to resolve with the client
 
 - [ ] Signed-off asset×chain matrix (USDT on *which* chains exactly?)
+- [ ] **Wrong-asset deposit policy** — a user sending ETH to a USDC-labeled
+      address is invisible to the poller unless an ETH watch also exists on
+      it. Options: auto-watch all same-chain assets (more credits), flag for
+      manual recovery, or leave stranded. Real incident observed on testnet;
+      recovered by manually inserting a watch row. **Client product decision.**
+- [ ] Webhook-mode deposit detection at mainnet volume (needs paid plan)
+- [ ] Reorg policy: `confirmed → pending` reversal path is coded in webhook
+      handling but never tested — poller only moves forward
 - [ ] Who owns the Tatum subscription + KMS infra? (should be client)
 - [ ] Free plan is 3 RPS / 100K lifetime credits / 100 notifications per
       month — polling mode keeps us viable at low volume, but mainnet

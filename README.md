@@ -20,10 +20,14 @@ when it's confirmed) and all blockchain I/O. The provider is behind a
 
 ### Deposit flow (Selly-style)
 
-1. `POST /api/v1/wallets` — wallet per `externalUserId` (one account per enabled asset)
+1. `POST /api/v1/wallets` — wallet per `externalUserId` (one account per
+   **chain**; assets on a chain share its xpub + derivation index, so
+   ETH and USDC_ETH never derive colliding addresses)
 2. `POST /api/v1/wallets/:id/addresses` `{asset, reference?, expiresInMinutes?}` —
    deposit address; `reference` ties it to an order/invoice, `expiresInMinutes`
-   bounds monitoring cost (default 60)
+   bounds monitoring cost (default 60). Same-chain assets on one address are
+   tracked as separate (address, asset) watch pairs — an ETH payment to a
+   USDC-labeled address can still be detected if an ETH watch exists.
 3. Detection runs in one of two modes (`DEPOSIT_DETECTION`):
    - `polling` (default): DepositPoller checks active-address balances every
      ~2 min and credits deltas — credit-minimal, works on Tatum's free plan
@@ -36,8 +40,13 @@ when it's confirmed) and all blockchain I/O. The provider is behind a
 ### Withdrawal flow
 
 `POST /api/v1/transactions` — ledger debit + broadcast recorded atomically.
-Production signing goes through Tatum KMS (`TATUM_USE_KMS=true`); private keys
-never transit this service.
+An outbound sweeper (`OutboundStatusService`) re-fetches pending outbound
+txids every ~2 min, derives confirmations from the chain tip, records real
+on-chain fees, and marks them `confirmed`/`failed` — payout status is
+always truthful. Production signing goes through Tatum KMS
+(`TATUM_USE_KMS=true`); private keys never transit this service.
+Dev/testnet signing uses `TESTNET_PK_{chain}` + `TESTNET_FROM_{chain}`
+env vars — **testnet only, never mainnet**.
 
 ## Endpoints
 
@@ -65,7 +74,9 @@ Swagger UI at `/docs`.
   re-fetched and its outputs checked against the deposit address.
 - **Confirmation thresholds** per chain (`CONFIRMATIONS_*` env); a 2-min cron
   sweeper re-checks pending txs so a dropped webhook is non-fatal.
-- **Outbound webhooks** to the main app are HMAC-SHA256 signed
+- **Outbound webhooks** to the main app are HMAC-SHA256 signed and persisted
+  in an `outbound_events` outbox — retried with backoff, dead-lettered after
+  8 attempts, deduped consumer-side via `X-Webhook-Event-Id`
   (`X-Webhook-Signature: sha256=...`).
 - Ledger debits for withdrawals are written **before** broadcast, in the same
   DB transaction — a crash mid-broadcast leaves a reconcilable pending row.
@@ -74,6 +85,23 @@ Swagger UI at `/docs`.
 
 Defined in `src/config/assets.ts` — this is the contractual scope boundary.
 Restrict further with `ENABLED_ASSETS` env (comma-separated codes).
+Token entries carry a `testnetContract` resolved automatically when
+`TATUM_NETWORK=testnet` (e.g. Sepolia USDC is a different contract than
+mainnet USDC).
+
+### Verified on live testnet (2026-10-01)
+
+"Verified" = a real on-chain tx detected/confirmed/credited (deposits) or
+broadcast/debited/confirmed (sends) — not just code review.
+
+| Asset | Testnet | Deposit | Send | Notes |
+|---|---|---|---|---|
+| BTC | testnet3 | ✅ 2/2 confs | ✅ broadcast | UTXO schema differs — fromAddress/fromUTXO |
+| ETH | Sepolia | ✅ | ✅ | round-trip verified |
+| SOL | devnet | ✅ | ❌ untested | single-address model (get-or-create) |
+| USDC_ETH | Sepolia | ✅ | ✅ | official Circle testnet USDC |
+| USDT_ETH | Sepolia | ✅ | ✅ | self-deployed mock — no canonical Sepolia USDT |
+| LTC / POLYGON / TRON + tokens | — | ❌ registered only | ❌ | registry entries, zero live validation |
 
 ## Running
 

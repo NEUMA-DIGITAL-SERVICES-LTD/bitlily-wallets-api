@@ -115,8 +115,11 @@ export class DepositPollerService {
 
         // A pending record from an earlier poll shares this txid — advance
         // its confirmation count instead of inserting a duplicate.
+        // direction:'inbound' matters: an outbound send TO our own watched
+        // address (self-transfer, consolidation) has the same on-chain txid —
+        // without the filter it would swallow this deposit's credit.
         const existing = await m.findOne(Transaction, {
-          where: { txid, address: dep.address, asset: asset.code },
+          where: { txid, address: dep.address, asset: asset.code, direction: 'inbound' },
         });
         if (existing) {
           existing.confirmations = reportConfs;

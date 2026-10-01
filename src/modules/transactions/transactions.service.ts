@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   Inject,
   Injectable,
@@ -18,6 +19,7 @@ import {
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
 import { SendTransactionDto } from './transactions.dto';
+import { errMsg } from '../../common/errors';
 
 @Injectable()
 export class TransactionsService {
@@ -60,14 +62,10 @@ export class TransactionsService {
       );
     }
 
-    const result = await this.provider.sendTransaction({
-      asset,
-      fromAccountId: account.id,
-      toAddress: dto.toAddress,
-      amount: dto.amount,
-      reference: dto.reference,
-    });
-
+    // Debit + pending row FIRST, atomically — a crash between here and
+    // broadcast leaves a reconcilable pending row (placeholder txid).
+    // Broadcasting first and recording after is how funds get double-sent
+    // or moved without a ledger record.
     const tx = await this.dataSource.transaction(async (em) => {
       const t = await em.save(
         em.create(Transaction, {
@@ -75,7 +73,7 @@ export class TransactionsService {
           direction: 'outbound',
           chain: asset.chain,
           asset: asset.code,
-          txid: result.txid,
+          txid: `pending:${crypto.randomUUID()}`,
           address: dto.toAddress,
           amount: dto.amount,
           status: 'pending',
@@ -87,6 +85,29 @@ export class TransactionsService {
       return t;
     });
 
+    let txid: string;
+    try {
+      const result = await this.provider.sendTransaction({
+        asset,
+        fromAccountId: account.id,
+        toAddress: dto.toAddress,
+        amount: dto.amount,
+        reference: dto.reference,
+      });
+      txid = result.txid;
+    } catch (e) {
+      // Broadcast failed — reverse the debit so the ledger stays truthful.
+      await this.dataSource.transaction(async (em) => {
+        await em.update(Transaction, tx.id, { status: 'failed' });
+        await this.ledger.postEntry(
+          em, account.wallet, tx, 'withdrawal_reversal', dto.amount, 'credit',
+        );
+      });
+      throw new BadGatewayException(`Broadcast failed: ${errMsg(e)}`);
+    }
+
+    await this.txs.update(tx.id, { txid });
+    tx.txid = txid;
     await this.notifier.notify('transaction.broadcast', tx);
     return tx;
   }

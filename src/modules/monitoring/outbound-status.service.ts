@@ -57,7 +57,11 @@ export class OutboundStatusService {
   }
 
   private async refresh(tx: Transaction): Promise<void> {
-    if (!tx.txid || tx.txid.startsWith('poll:')) return;
+    // Synthetic txids are never on-chain. poll:* are inbound detections;
+    // pending:* are outbound rows created before the real txid is known —
+    // one that stays pending:* means the process died between debit and
+    // broadcast; the row exists for ops reconciliation, not chain lookup.
+    if (!tx.txid || tx.txid.startsWith('poll:') || tx.txid.startsWith('pending:')) return;
     const asset = getAsset(tx.asset);
     try {
       const chainTx = await this.provider.getTransaction(
