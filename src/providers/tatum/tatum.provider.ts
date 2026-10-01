@@ -27,6 +27,21 @@ const CHAIN_PATH: Record<Chain, string> = {
 const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON'];
 
 /**
+ * Convert raw token base units → decimal string using BigInt math.
+ * Tatum token endpoints return smallest units ("20000000" = 20 USDC @ 6dp);
+ * a value already containing '.' is assumed pre-normalized and passed
+ * through (some TRON responses are decimal strings).
+ */
+function fromRaw(raw: string, decimals: number): string {
+  if (!/^\d+$/.test(raw)) return raw;
+  const v = BigInt(raw);
+  const base = 10n ** BigInt(decimals);
+  const whole = v / base;
+  const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : whole.toString();
+}
+
+/**
  * Tatum adapter — the ONLY place Tatum's API surface is allowed to appear.
  * Everything upstream talks to BlockchainProvider; swapping vendors means
  * replacing this file, not touching business logic.
@@ -88,17 +103,18 @@ export class TatumProvider implements BlockchainProvider {
   async getAddressBalance(address: string, asset: AssetDef): Promise<string> {
     const path = CHAIN_PATH[asset.chain];
     if (asset.type === 'token') {
-      // Token balances for EVM/TRON via dedicated endpoints.
+      // Token endpoints return RAW base units (e.g. 20 USDC → "20000000"
+      // at 6 decimals) — normalize by 10^decimals or deposits credit 10^6x.
       if (asset.chain === 'TRON') {
         const { data } = await this.http.get(`/v3/tron/account/${address}`);
         const trc20 = (data?.trc20 ?? []) as Record<string, string>[];
         const hit = trc20.find((t) => t[asset.contract ?? '']);
-        return hit ? String(hit[asset.contract ?? '']) : '0';
+        return hit ? fromRaw(String(hit[asset.contract ?? '']), asset.decimals) : '0';
       }
       const { data } = await this.http.get(
         `/v3/${path}/account/balance/erc20/${address}?contractAddress=${asset.contract}`,
       );
-      return String(data.balance ?? data ?? '0');
+      return fromRaw(String(data.balance ?? data ?? '0'), asset.decimals);
     }
     if (asset.chain === 'BTC' || asset.chain === 'LTC') {
       const { data } = await this.http.get(`/v3/${path}/address/balance/${address}`);
