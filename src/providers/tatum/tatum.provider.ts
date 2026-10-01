@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { AssetDef, Chain } from '../../config/assets';
 import { parseErc20Transfers } from './evm-logs';
+import { errMsg } from '../../common/errors';
 import {
   BlockchainProvider,
   ChainAccountMaterial,
@@ -304,19 +305,81 @@ export class TatumProvider implements BlockchainProvider {
     // Production path: signatureId references KMS-held keys — private keys
     // never transit this service. Testnet/dev path may pass a private key
     // from env via the caller (documented, testnet-only).
+    // EVM token sends go through the custom-token endpoint — the chain
+    // transaction endpoint only accepts Tatum's enumerated currencies.
+    const isEvm = params.asset.chain === 'ETH' || params.asset.chain === 'POLYGON';
+    const isToken = params.asset.type === 'token';
+    if (isEvm && isToken) {
+      // EVM gas estimate + margin — Tatum's default estimate can lag baseFee.
+      const fee = await this.estimateEvmFee(path, params);
+      const tokenBody: Record<string, unknown> = {
+        chain: params.asset.chain,
+        to: params.toAddress,
+        amount: params.amount,
+        contractAddress: params.asset.contract,
+        digits: params.asset.decimals,
+        ...(useKms
+          ? { signatureId: params.fromAccountId }
+          : { fromPrivateKey: process.env[`TESTNET_PK_${params.asset.chain}`] }),
+        // This endpoint takes gasLimit/gasPrice flat — a nested `fee`
+        // object is silently ignored and Tatum falls back to gasLimit
+        // 21000, which fails ERC-20 transfers ("gasLimit too low").
+        ...(fee ?? {}),
+      };
+      const { data } = await this.http.post('/v3/blockchain/token/transaction', tokenBody);
+      return { txid: data.txId ?? data.txid ?? data.hash };
+    }
+
     const body: Record<string, unknown> = {
       to: params.toAddress,
       amount: params.amount,
+      // Tatum's send schema requires currency — the chain's native symbol.
+      currency: params.asset.code,
       ...(useKms
         ? { signatureId: params.fromAccountId }
         : { fromPrivateKey: process.env[`TESTNET_PK_${params.asset.chain}`] }),
     };
-    if (params.asset.type === 'token') {
-      body.contractAddress = params.asset.contract;
-      body.digits = params.asset.decimals;
+    if (isEvm) {
+      const fee = await this.estimateEvmFee(path, params);
+      if (fee) body.fee = fee;
     }
     const { data } = await this.http.post(`/v3/${path}/transaction`, body);
     return { txid: data.txId ?? data.txid ?? data.hash };
+  }
+
+  /**
+   * EVM gas estimation. Tatum's per-tx /gas endpoint balance-checks `from`,
+   * which fails for token sends when the caller doesn't know the signing
+   * address — fall back to the chain fee schedule with a standard limit.
+   * Returned gasPrice is converted wei→Gwei (schema units).
+   */
+  private async estimateEvmFee(
+    path: string,
+    params: SendTxParams,
+  ): Promise<{ gasLimit: string; gasPrice: string } | null> {
+    const defaultLimit = params.asset.type === 'token' ? '100000' : '21000';
+    const toGwei = (wei: string) =>
+      (((BigInt(wei) * 150n) / 100n + 999_999_999n) / 1_000_000_000n).toString();
+    try {
+      const { data } = await this.http.post(`/v3/${path}/gas`, {
+        from: '0x0000000000000000000000000000000000000000',
+        to: params.toAddress,
+        amount: params.amount,
+      });
+      const wei = String(data?.gasPrice ?? '0');
+      if (wei === '0') throw new Error('zero gasPrice');
+      return { gasLimit: String(data.gasLimit ?? defaultLimit), gasPrice: toGwei(wei) };
+    } catch (e) {
+      try {
+        const { data } = await this.http.get(`/v3/blockchain/fee/${params.asset.chain}`);
+        const wei = String(data?.fast ?? data?.medium ?? '0');
+        if (wei === '0') return null;
+        return { gasLimit: defaultLimit, gasPrice: toGwei(wei) };
+      } catch (e2) {
+        this.logger.warn(`EVM fee estimate failed, using Tatum default: ${errMsg(e2)}`);
+        return null;
+      }
+    }
   }
 
   async createAddressSubscription(address: string, chain: Chain): Promise<SubscriptionResult> {
