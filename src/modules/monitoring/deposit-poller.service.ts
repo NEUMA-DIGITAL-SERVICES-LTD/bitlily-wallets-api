@@ -91,7 +91,9 @@ export class DepositPollerService {
       // confirmation policy, without one we credit (documented tradeoff).
 
       const tx = await this.em.transaction(async (m) => {
-        // Re-read inside the tx; another worker may have credited meanwhile.
+        // Lock just this row (no join — FOR UPDATE can't hit nullable
+        // outer-join sides on Postgres). Wallet/account refs are immutable
+        // and already loaded on `dep`.
         const fresh = await m.findOne(DepositAddress, {
           where: { id: dep.id },
           lock: { mode: 'pessimistic_write' },
@@ -101,7 +103,7 @@ export class DepositPollerService {
 
         const t = await m.save(
           m.create(Transaction, {
-            wallet: fresh.account.wallet,
+            wallet: dep.account.wallet,
             direction: 'inbound',
             chain: dep.chain,
             asset: dep.asset,
@@ -118,7 +120,7 @@ export class DepositPollerService {
         );
         if (confirmed) {
           await this.ledger.postEntry(
-            m, fresh.account.wallet, t, 'deposit_confirmed',
+            m, dep.account.wallet, t, 'deposit_confirmed',
             freshDelta.toFixed(8), 'credit',
           );
           fresh.creditedAmount = observed;
