@@ -343,13 +343,14 @@ export class TatumProvider implements BlockchainProvider {
           `TESTNET_PK_${params.asset.chain} (or KMS)`,
         );
       }
+      // Tatum requires `fee` + `changeAddress` together or neither — omitting
+      // both lets it auto-fee and return change to the sender address.
       const utxoBody = {
         fromAddress: [
           useKms ? { address: fromAddr, signatureId: params.fromAccountId }
                  : { address: fromAddr, privateKey: pk },
         ],
         to: [{ address: params.toAddress, value: Number(params.amount) }],
-        changeAddress: fromAddr,
       };
       const { data } = await this.http.post(`/v3/${path}/transaction`, utxoBody);
       return { txid: data.txId ?? data.txid ?? data.hash };
