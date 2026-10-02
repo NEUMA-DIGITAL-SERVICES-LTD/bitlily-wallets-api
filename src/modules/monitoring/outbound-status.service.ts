@@ -59,9 +59,27 @@ export class OutboundStatusService {
   private async refresh(tx: Transaction): Promise<void> {
     // Synthetic txids are never on-chain. poll:* are inbound detections;
     // pending:* are outbound rows created before the real txid is known —
-    // one that stays pending:* means the process died between debit and
-    // broadcast; the row exists for ops reconciliation, not chain lookup.
-    if (!tx.txid || tx.txid.startsWith('poll:') || tx.txid.startsWith('pending:')) return;
+    // one that stays pending:* means the process died between debit-commit
+    // and broadcast, OR between broadcast and the txid write. The second
+    // case is dangerous: funds may have moved with no txid recorded.
+    // We can't auto-resolve it without knowing what the provider actually
+    // broadcast — so detect it and alert loudly, once.
+    if (tx.txid?.startsWith('pending:')) {
+      const stale = Date.now() - tx.createdAt.getTime() > 10 * 60 * 1000;
+      const alerted = (tx.raw as any)?.reconcileAlerted === true;
+      if (stale && !alerted) {
+        tx.raw = { ...(tx.raw ?? {}), reconcileAlerted: true };
+        await this.txs.save(tx);
+        await this.notifier.notify('withdrawal.reconcile_required', tx);
+        this.logger.error(
+          `tx ${tx.id} has placeholder txid ${tx.txid} — crash between debit and ` +
+          `broadcast suspected. RECONCILE MANUALLY: check chain for a ` +
+          `${tx.asset} send to ${tx.address} of ${tx.amount} near ${tx.createdAt.toISOString()}.`,
+        );
+      }
+      return;
+    }
+    if (!tx.txid || tx.txid.startsWith('poll:')) return;
     const asset = getAsset(tx.asset);
     try {
       const chainTx = await this.provider.getTransaction(

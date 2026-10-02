@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { WalletsService } from './wallets.service';
-import { CreateWalletDto, GenerateAddressDto } from './wallets.dto';
+import { CreateWalletDto, GenerateAddressDto, WatchAddressDto } from './wallets.dto';
 
 @ApiTags('wallets')
 @ApiSecurity('x-api-key')
@@ -29,6 +29,16 @@ export class WalletsController {
     return this.wallets.generateDepositAddress(
       id, dto.asset, dto.reference, dto.expiresInMinutes,
     );
+  }
+
+  @Post(':id/watch')
+  @ApiOperation({
+    summary:
+      'Re-watch an address for an asset — recovery for late payments to expired ' +
+      'addresses and wrong-asset sends. Address must belong to this wallet.',
+  })
+  watchAddress(@Param('id') id: string, @Body() dto: WatchAddressDto) {
+    return this.wallets.watchAddress(id, dto.address, dto.asset, dto.expiresInMinutes);
   }
 
   @Get(':id/addresses')

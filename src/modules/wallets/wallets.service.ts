@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
@@ -129,7 +129,11 @@ export class WalletsService {
         if (existing) {
           existing.reference = reference ?? existing.reference;
           existing.expiresAt = expiresAt;
-          return em.save(existing);
+          const saved = await em.save(existing);
+          await this.ensureSameChainWatches(
+            em, account, saved.address, saved.derivationIndex, asset.code, expiresAt, reference,
+          );
+          return saved;
         }
       }
 
@@ -153,6 +157,10 @@ export class WalletsService {
         }),
       );
 
+      await this.ensureSameChainWatches(
+        em, account, address, index, asset.code, expiresAt, reference,
+      );
+
       // Webhook mode registers provider-side monitoring; polling mode relies
       // on the DepositPoller — no per-address subscription cost.
       const useWebhooks = this.config.get('detection.strategy') === 'webhook';
@@ -169,6 +177,103 @@ export class WalletsService {
         }
       }
       return dep;
+    });
+  }
+
+  /**
+   * Wrong-asset recovery: watch a generated address for EVERY enabled
+   * same-chain asset, so a USDC payment to an ETH-labeled address is
+   * detected instead of stranded. Costs one extra balance read per
+   * same-chain asset per poll — bounded by the registry; recoverability
+   * wins over credit thrift for a payments product.
+   */
+  private async ensureSameChainWatches(
+    em: EntityManager,
+    account: WalletAccount,
+    address: string,
+    derivationIndex: number,
+    primaryAsset: string,
+    expiresAt: Date | null,
+    reference?: string,
+  ): Promise<void> {
+    for (const other of enabledAssets().filter(
+      (a) => a.chain === account.chain && a.code !== primaryAsset,
+    )) {
+      const row = await em.findOne(DepositAddress, {
+        where: { address, asset: other.code },
+      });
+      if (row) {
+        if (row.status !== 'active' || (expiresAt && row.expiresAt < expiresAt)) {
+          row.status = 'active';
+          row.expiresAt = expiresAt;
+          await em.save(row);
+        }
+        continue;
+      }
+      await em.save(
+        em.create(DepositAddress, {
+          account,
+          address,
+          chain: account.chain,
+          asset: other.code,
+          derivationIndex,
+          reference,
+          expiresAt,
+        }),
+      );
+    }
+  }
+
+  /**
+   * Re-watch an address for an asset — recovery path for late payments to
+   * expired addresses and wrong-asset sends predating auto-watch.
+   * Restricted to addresses that already belong to this wallet: watching
+   * arbitrary foreign addresses would credit funds we cannot sweep.
+   */
+  async watchAddress(
+    walletId: string,
+    address: string,
+    assetCode: string,
+    expiresInMinutes?: number,
+  ): Promise<DepositAddress> {
+    const asset = getAsset(assetCode);
+    if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
+
+    const ttl = expiresInMinutes ?? this.config.get<number>('detection.addressTtlMinutes');
+    const expiresAt = ttl ? new Date(Date.now() + ttl * 60_000) : null;
+
+    return this.dataSource.transaction(async (em) => {
+      const row = await em.findOne(DepositAddress, {
+        where: { address, asset: asset.code, account: { wallet: { id: walletId } } },
+        relations: ['account'],
+      });
+      if (row) {
+        row.status = 'active';
+        row.expiresAt = expiresAt;
+        return em.save(row);
+      }
+      // No watch row for this asset — allowed only if the address is one of
+      // this wallet's own deposit addresses on the asset's chain.
+      const anyRow = await em.findOne(DepositAddress, {
+        where: { address, account: { wallet: { id: walletId } } },
+        relations: ['account'],
+      });
+      if (!anyRow || anyRow.chain !== asset.chain) {
+        throw new BadRequestException(
+          `Address ${address} is not a ${asset.chain} deposit address on this wallet`,
+        );
+      }
+      return em.save(
+        em.create(DepositAddress, {
+          account: anyRow.account,
+          address,
+          chain: asset.chain,
+          asset: asset.code,
+          derivationIndex: anyRow.derivationIndex,
+          reference: anyRow.reference,
+          expiresAt,
+        }),
+      );
     });
   }
 

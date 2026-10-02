@@ -23,6 +23,7 @@ describe('DepositPollerService', () => {
 
   let service: DepositPollerService;
   let addresses: any;
+  let txs: any;
   let em: any;
   let m: any; // transactional EntityManager
   let provider: any;
@@ -31,7 +32,18 @@ describe('DepositPollerService', () => {
   let config: any;
 
   const makePoller = () => {
-    addresses = { find: jest.fn().mockResolvedValue([dep]), update: jest.fn() };
+    addresses = {
+      find: jest.fn().mockResolvedValue([dep]),
+      update: jest.fn(),
+      findOneOrFail: jest.fn(async () => {
+        const [d] = await addresses.find();
+        return { creditedAmount: d.creditedAmount };
+      }),
+    };
+    txs = {
+      find: jest.fn().mockResolvedValue([]),
+      update: jest.fn(),
+    };
     m = {
       findOne: jest.fn(),
       save: jest.fn(async (_e: any, o?: any) => o ?? _e),
@@ -43,6 +55,7 @@ describe('DepositPollerService', () => {
       getAddressBalance: jest.fn(),
       getAddressTransactions: jest.fn().mockResolvedValue([]),
       getLatestBlock: jest.fn().mockResolvedValue(0),
+      getTransaction: jest.fn().mockResolvedValue(null),
     };
     ledger = { postEntry: jest.fn() };
     notifier = { notify: jest.fn() };
@@ -54,7 +67,7 @@ describe('DepositPollerService', () => {
       ),
     };
     service = new DepositPollerService(
-      addresses, {} as any, em, provider, ledger, notifier, config,
+      addresses, txs, em, provider, ledger, notifier, config,
     );
   };
 
@@ -142,6 +155,45 @@ describe('DepositPollerService', () => {
     const savedDep = m.save.mock.calls.map((c: any[]) => c[0])
       .find((o: any) => o?.creditedAmount !== undefined);
     expect(savedDep.creditedAmount).toBe('0.00100000');
+  });
+
+  it('reverses a confirmed deposit whose txid vanished (reorg)', async () => {
+    const creditedDep = { ...dep, creditedAmount: '0.50000000' };
+    addresses.find.mockResolvedValue([creditedDep]);
+    const confirmedTx = {
+      id: 'tx1', wallet, txid: 'realtxid', address: 'addr-1', asset: 'BTC',
+      amount: '0.50000000', status: 'confirmed', confirmations: 3,
+      direction: 'inbound', createdAt: new Date(),
+    } as unknown as Transaction;
+    txs.find.mockResolvedValue([confirmedTx]);
+    provider.getTransaction.mockResolvedValue(null); // tx gone from chain
+    provider.getAddressBalance.mockResolvedValue('0'); // funds gone too
+    m.findOne.mockImplementation((e: any) =>
+      e === DepositAddress ? { ...creditedDep } : null);
+
+    await service.poll();
+
+    expect(m.update).toHaveBeenCalledWith(
+      Transaction, 'tx1',
+      expect.objectContaining({ status: 'reorged' }),
+    );
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, wallet, confirmedTx, 'deposit_reversal', '0.50000000', 'debit',
+    );
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.reorged', confirmedTx);
+    // No re-credit attempted against the dropped balance
+    expect(m.create.mock.calls.filter((c: any[]) => c[0] === Transaction)).toHaveLength(0);
+  });
+
+  it('rebaselines creditedAmount when the balance dropped (funds swept out)', async () => {
+    const creditedDep = { ...dep, creditedAmount: '0.50000000' };
+    addresses.find.mockResolvedValue([creditedDep]);
+    provider.getAddressBalance.mockResolvedValue('0.1'); // swept
+
+    await service.poll();
+
+    expect(addresses.update).toHaveBeenCalledWith('dep1', { creditedAmount: '0.1' });
+    expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 
   it('re-polling a confirmed deposit is a no-op (idempotent)', async () => {

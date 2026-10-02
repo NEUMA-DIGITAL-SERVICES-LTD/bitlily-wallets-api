@@ -14,6 +14,7 @@ import { Transaction } from './transaction.entity';
 export type LedgerDirection = 'credit' | 'debit';
 export type LedgerKind =
   | 'deposit_confirmed'
+  | 'deposit_reversal'
   | 'withdrawal'
   | 'withdrawal_reversal'
   | 'adjustment';

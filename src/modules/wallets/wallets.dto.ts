@@ -34,6 +34,28 @@ export class GenerateAddressDto {
   expiresInMinutes?: number;
 }
 
+export class WatchAddressDto {
+  @ApiProperty({ description: 'The deposit address to (re)watch' })
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+
+  @ApiProperty({ description: 'Asset code to watch for, e.g. BTC, USDC_ETH' })
+  @IsString()
+  @IsNotEmpty()
+  asset: string;
+
+  @ApiPropertyOptional({
+    description: 'Minutes until the watch expires again. Omit for default TTL.',
+    default: 60,
+  })
+  @IsInt()
+  @Min(1)
+  @Max(10080)
+  @IsOptional()
+  expiresInMinutes?: number;
+}
+
 export class AssetParamDto {
   @IsString()
   @Matches(/^[A-Z0-9_]+$/)

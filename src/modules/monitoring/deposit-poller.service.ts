@@ -5,7 +5,7 @@ import { Cron } from '@nestjs/schedule';
 import { EntityManager, Repository, IsNull, MoreThan, Or } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
-import { getAsset } from '../../config/assets';
+import { AssetDef, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
@@ -71,7 +71,30 @@ export class DepositPollerService {
     let observed: string;
     try {
       observed = await this.provider.getAddressBalance(dep.address, asset);
+
+      // Reorg guard BEFORE delta math: re-verify recently-confirmed deposits
+      // that carry a real txid. If one vanished or fell below the
+      // confirmation threshold, reverse it — otherwise the balance drop
+      // would just look like a withdrawal and the phantom credit stands.
+      // Reverify may adjust creditedAmount — re-read before computing delta.
+      await this.reverifyRecent(dep, asset);
+      const { creditedAmount } = await this.addresses.findOneOrFail({
+        where: { id: dep.id },
+        select: ['creditedAmount'],
+      });
+      dep.creditedAmount = creditedAmount;
+
       const delta = parseFloat(observed) - parseFloat(dep.creditedAmount);
+      if (delta < 0) {
+        // Balance dropped below our credited baseline — funds left the
+        // address (sweep, withdrawal). Rebaseline so the next deposit
+        // credits its full amount instead of the shrunken delta.
+        await this.addresses.update(dep.id, { creditedAmount: observed });
+        this.logger.log(
+          `Rebaselined ${dep.address} ${asset.code}: credited ${dep.creditedAmount} → ${observed}`,
+        );
+        return;
+      }
       if (delta <= 0) return;
 
       // Best-effort txid attribution (UTXO chains expose address history).
@@ -177,6 +200,72 @@ export class DepositPollerService {
       } else {
         this.logger.error(`Poll failed for ${dep.address}: ${errMsg(e)}`);
       }
+    }
+  }
+
+  /**
+   * Re-verify recently-confirmed deposits that carry a real (non-synthetic)
+   * txid. Deposits still under the finality window are re-fetched; a tx that
+   * disappeared or fell below the confirmation threshold gets status
+   * 'reorged', a deposit_reversal ledger debit, and its amount removed from
+   * the address's credited baseline. Synthetic poll:* entries can't be
+   * re-verified this way — account-chain reorgs deep enough to matter are
+   * rare; UTXO chains are where this guard earns its keep.
+   */
+  private async reverifyRecent(dep: DepositAddress, asset: AssetDef): Promise<void> {
+    const req = this.requiredConfirmations(dep.chain);
+    const finality = Math.max(req * 3, 6);
+    const candidates = await this.txs.find({
+      where: {
+        address: dep.address,
+        asset: asset.code,
+        direction: 'inbound',
+        status: 'confirmed',
+      },
+      order: { createdAt: 'DESC' },
+      take: 50,
+    });
+    for (const t of candidates) {
+      if (!t.txid || t.txid.includes(':')) continue; // synthetic — unverifiable
+      if ((t.confirmations ?? 0) >= finality) continue; // past reorg horizon
+
+      let chainTx = await this.provider
+        .getTransaction(t.txid, dep.chain as any, asset as any)
+        .catch(() => null);
+      if (chainTx?.blockNumber != null) {
+        try {
+          const head = await this.provider.getLatestBlock(dep.chain as any);
+          if (head > 0) chainTx.confirmations = Math.max(0, head - chainTx.blockNumber + 1);
+        } catch { /* keep reported value */ }
+      }
+      if (chainTx && (chainTx.confirmations ?? 0) >= req) {
+        if ((chainTx.confirmations ?? 0) !== t.confirmations) {
+          await this.txs.update(t.id, { confirmations: chainTx.confirmations });
+        }
+        continue;
+      }
+
+      // Reorged or unverifiable — reverse it.
+      await this.em.transaction(async (m) => {
+        await m.update(Transaction, t.id, { status: 'reorged', confirmations: chainTx?.confirmations ?? 0 });
+        await this.ledger.postEntry(
+          m, dep.account.wallet, t, 'deposit_reversal', t.amount, 'debit',
+        );
+        const fresh = await m.findOne(DepositAddress, {
+          where: { id: dep.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (fresh) {
+          fresh.creditedAmount = Math.max(
+            0, parseFloat(fresh.creditedAmount) - parseFloat(t.amount),
+          ).toFixed(8);
+          await m.save(fresh);
+        }
+      });
+      await this.notifier.notify('deposit.reorged', t);
+      this.logger.warn(
+        `Deposit ${t.txid} on ${dep.address} reorged below ${req} confs — reversed ${t.amount} ${asset.code}`,
+      );
     }
   }
 
