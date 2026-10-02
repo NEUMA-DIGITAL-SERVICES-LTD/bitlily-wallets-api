@@ -346,7 +346,10 @@ export class TatumProvider implements BlockchainProvider {
     // directed back to the sender. TESTNET_FROM_{chain} holds the address
     // matching TESTNET_PK_{chain}. Under KMS, signatureId replaces the key.
     if (params.asset.chain === 'BTC' || params.asset.chain === 'LTC') {
-      const fromAddr = process.env[`TESTNET_FROM_${params.asset.chain}`];
+      // Under custody, UTXOs live at the treasury (index-0) address after
+      // sweeps; env-mode falls back to the dev key's address.
+      const fromAddr =
+        params.sourceAddress ?? process.env[`TESTNET_FROM_${params.asset.chain}`];
       const pk = process.env[`TESTNET_PK_${params.asset.chain}`];
       if (!useKms && (!fromAddr || !pk)) {
         throw new Error(

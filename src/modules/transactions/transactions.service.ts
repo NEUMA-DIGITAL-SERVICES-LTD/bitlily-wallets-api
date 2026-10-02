@@ -11,6 +11,7 @@ import { DataSource, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
+import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { AssetDef, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
@@ -114,10 +115,17 @@ export class TransactionsService {
     asset: AssetDef,
   ): Promise<Transaction> {
     try {
+      // Custody model: withdrawals spend from the chain treasury (index 0) —
+      // sweeps converge deposit funds there. UTXO chains need the treasury
+      // address named explicitly as the UTXO source.
+      const custody = await this.dataSource.getRepository(CustodyAccount)
+        .findOne({ where: { chain: asset.chain } });
       const result = await this.provider.sendTransaction({
         asset,
         fromAccountId: account.id,
         signatureId: account.secretRef,
+        derivationIndex: custody?.xpub ? 0 : undefined,
+        sourceAddress: custody?.treasuryAddress ?? undefined,
         toAddress: tx.address,
         amount: tx.amount,
         reference: tx.reference,

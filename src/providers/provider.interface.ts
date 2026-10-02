@@ -46,6 +46,8 @@ export interface SendTxParams {
    * KMS-managed mnemonic wallets to sign a derived address (sweeps).
    */
   derivationIndex?: number | null;
+  /** UTXO source address — treasury address under custody (funds sit there post-sweep). */
+  sourceAddress?: string;
   toAddress: string;
   amount: string;
   /** Client reference echoed on the transaction record. */

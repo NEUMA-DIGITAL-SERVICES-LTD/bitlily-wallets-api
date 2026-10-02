@@ -14,9 +14,8 @@ import { Public } from '../../common/api-key.guard';
  * tricked into signing a transfer our service didn't originate.
  *
  * Public by design — KMS has no API key. Set KMS_VERIFY_TOKEN and embed it
- * in the daemon's external-checks URL ({base}/api/v1/kms/verify/{id}?token=…)
- * so the endpoint can't be probed for pending-withdrawal existence. Also
- * rate-limit at the edge in prod.
+ * in the daemon's --externalUrl path so the endpoint can't be probed for
+ * pending-withdrawal existence. Also rate-limit at the edge in prod.
  */
 @ApiTags('kms')
 @Controller('api/v1/kms')
@@ -27,15 +26,26 @@ export class KmsVerifyController {
     private readonly config: ConfigService,
   ) {}
 
-  @Get('verify/:requestId')
+  /**
+   * KMS builds the check URL by string-concatenating `{externalUrl}/{txId}` —
+   * a query param in the daemon's --externalUrl would end up BEFORE the txid
+   * and break matching. So the shared token travels as a path segment:
+   * externalUrl = {base}/api/v1/kms/verify/{KMS_VERIFY_TOKEN}
+   *            → KMS calls {base}/api/v1/kms/verify/{KMS_VERIFY_TOKEN}/{txId}
+   * A tokenless verify/{txId} route stays for dev when KMS_VERIFY_TOKEN unset.
+   */
+  @Get(['verify/:requestId', 'verify/:token/:requestId'])
   @Public()
   async verify(
     @Param('requestId') requestId: string,
-    @Query('token') token?: string,
+    @Param('token') pathToken?: string,
+    @Query('token') queryToken?: string,
   ) {
-    const expected = process.env.KMS_VERIFY_TOKEN ?? this.config.get<string>('kmsVerifyToken');
-    if (expected && token !== expected) {
-      throw new UnauthorizedException();
+    const expected =
+      process.env.KMS_VERIFY_TOKEN ?? this.config.get<string>('kmsVerifyToken');
+    if (expected) {
+      const supplied = pathToken ?? queryToken;
+      if (supplied !== expected) throw new UnauthorizedException();
     }
     const rows = await this.txs.find({
       where: { direction: 'outbound', status: 'pending' },

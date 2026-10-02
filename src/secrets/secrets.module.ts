@@ -2,40 +2,40 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SECRET_STORE, SecretStore } from './secret-store';
 import { EnvSecretStore } from './env.store';
-import { TatumKmsStore } from './tatum-kms.store';
 
 /**
- * Chooses the secret store by config: TATUM_USE_KMS=true requires KMS_URL
- * and enrolls into the Tatum KMS daemon; anything else falls back to the
- * dev env-key store. Fails fast on mainnet+env to prevent shipping a
- * custodial service with discarded keys.
+ * Chooses the secret store by config. Under TATUM_USE_KMS, enrollment is a
+ * custody_accounts concern (operator runs tatum-kms CLI on the KMS host;
+ * secrets NEVER transit this service) — the store here is a trap that fails
+ * loudly if any code path tries to enroll secrets under KMS mode.
+ * Mainnet refuses env-key signing entirely.
  */
+const kmsTrapStore: SecretStore = {
+  name: 'kms-trap',
+  async enroll(): Promise<string> {
+    throw new Error(
+      'KMS mode: secrets enroll on the KMS host via tatum-kms CLI, ' +
+      'then POST /api/v1/admin/custody — SecretStore.enroll must not be reached.',
+    );
+  },
+};
+
 @Global()
 @Module({
   imports: [ConfigModule],
   providers: [
     EnvSecretStore,
-    TatumKmsStore,
     {
       provide: SECRET_STORE,
-      inject: [ConfigService, EnvSecretStore, TatumKmsStore],
-      useFactory: (
-        config: ConfigService,
-        env: EnvSecretStore,
-        kms: TatumKmsStore,
-      ): SecretStore => {
+      inject: [ConfigService, EnvSecretStore],
+      useFactory: (config: ConfigService, env: EnvSecretStore): SecretStore => {
         const useKms = config.get('tatum.useKms') === true;
         const network = config.get<string>('tatum.network');
-        if (useKms) {
-          if (!config.get<string>('tatum.kmsUrl')) {
-            throw new Error('TATUM_USE_KMS=true requires KMS_URL');
-          }
-          return kms;
-        }
+        if (useKms) return kmsTrapStore;
         if (network === 'mainnet') {
           throw new Error(
             'Refusing to boot: env-key signing on mainnet. ' +
-            'Set TATUM_USE_KMS=true with KMS_URL.',
+            'Set TATUM_USE_KMS=true and enroll custody wallets.',
           );
         }
         return env;
