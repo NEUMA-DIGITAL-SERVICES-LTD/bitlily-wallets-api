@@ -11,7 +11,7 @@ import { DataSource, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
-import { getAsset } from '../../config/assets';
+import { AssetDef, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
@@ -62,6 +62,19 @@ export class TransactionsService {
       );
     }
 
+    // Withdrawal policy — circuit breakers, applied before any debit.
+    const limits = this.config.get('limits') ?? { maxPerTx: {}, approvalAbove: {} };
+    const max = limits.maxPerTx?.[asset.code];
+    if (max && parseFloat(dto.amount) > parseFloat(max)) {
+      throw new BadRequestException(
+        `Amount ${dto.amount} ${asset.code} exceeds per-transaction limit ${max}`,
+      );
+    }
+    const needsApproval = (() => {
+      const thr = limits.approvalAbove?.[asset.code];
+      return thr ? parseFloat(dto.amount) >= parseFloat(thr) : false;
+    })();
+
     // Debit + pending row FIRST, atomically — a crash between here and
     // broadcast leaves a reconcilable pending row (placeholder txid).
     // Broadcasting first and recording after is how funds get double-sent
@@ -76,7 +89,7 @@ export class TransactionsService {
           txid: `pending:${crypto.randomUUID()}`,
           address: dto.toAddress,
           amount: dto.amount,
-          status: 'pending',
+          status: needsApproval ? 'requires_approval' : 'pending',
           requiredConfirmations: this.requiredConfirmations(asset.chain),
           reference: dto.reference,
         }),
@@ -85,14 +98,29 @@ export class TransactionsService {
       return t;
     });
 
+    if (needsApproval) {
+      // Funds stay debited (reserved) until an admin approves or rejects —
+      // the blast-radius control for large payouts.
+      await this.notifier.notify('withdrawal.requires_approval', tx);
+      return tx;
+    }
+    return this.broadcastPending(tx, account, asset);
+  }
+
+  /** Broadcast an already-debited pending outbound row (initial + approval paths). */
+  private async broadcastPending(
+    tx: Transaction,
+    account: WalletAccount,
+    asset: AssetDef,
+  ): Promise<Transaction> {
     try {
       const result = await this.provider.sendTransaction({
         asset,
         fromAccountId: account.id,
         signatureId: account.secretRef,
-        toAddress: dto.toAddress,
-        amount: dto.amount,
-        reference: dto.reference,
+        toAddress: tx.address,
+        amount: tx.amount,
+        reference: tx.reference,
       });
       if (result.kmsRequestId) {
         // KMS signing is async — the daemon picks up the pending request,
@@ -118,12 +146,61 @@ export class TransactionsService {
       await this.dataSource.transaction(async (em) => {
         await em.update(Transaction, tx.id, { status: 'failed' });
         await this.ledger.postEntry(
-          em, account.wallet, tx, 'withdrawal_reversal', dto.amount, 'credit',
+          em, account.wallet, tx, 'withdrawal_reversal', tx.amount, 'credit',
         );
       });
       if (e instanceof BadGatewayException) throw e;
       throw new BadGatewayException(`Broadcast failed: ${errMsg(e)}`);
     }
+  }
+
+  /**
+   * Admin approval — broadcast a parked requires_approval withdrawal. The
+   * status transition is a conditional UPDATE so concurrent approve/reject
+   * calls can't both win (double-broadcast = double spend from the ledger's
+   * perspective).
+   */
+  async approveWithdrawal(id: string): Promise<Transaction> {
+    const tx = await this.txs.findOne({ where: { id }, relations: ['wallet'] });
+    if (!tx) throw new NotFoundException(`Transaction ${id} not found`);
+    const claimed = await this.txs.update(
+      { id: tx.id, status: 'requires_approval' },
+      { status: 'pending' },
+    );
+    if (!claimed.affected) {
+      throw new BadRequestException(`tx ${id} is ${tx.status}, not requires_approval`);
+    }
+    const asset = getAsset(tx.asset);
+    if (!asset) throw new BadRequestException(`Unsupported asset: ${tx.asset}`);
+    const account = await this.accounts.findOne({
+      where: { wallet: { id: tx.wallet.id }, chain: asset.chain },
+      relations: ['wallet'],
+    });
+    if (!account) throw new NotFoundException(`No ${asset.chain} account on wallet`);
+    tx.status = 'pending';
+    return this.broadcastPending(tx, account, asset);
+  }
+
+  /** Admin rejection — park released, debit reversed. Conditional claim, same race guard. */
+  async rejectWithdrawal(id: string): Promise<Transaction> {
+    const tx = await this.txs.findOne({ where: { id }, relations: ['wallet'] });
+    if (!tx) throw new NotFoundException(`Transaction ${id} not found`);
+    await this.dataSource.transaction(async (em) => {
+      const claimed = await em.update(
+        Transaction,
+        { id: tx.id, status: 'requires_approval' },
+        { status: 'rejected' },
+      );
+      if (!claimed.affected) {
+        throw new BadRequestException(`tx ${id} is ${tx.status}, not requires_approval`);
+      }
+      await this.ledger.postEntry(
+        em, tx.wallet, tx, 'withdrawal_reversal', tx.amount, 'credit',
+      );
+    });
+    tx.status = 'rejected';
+    await this.notifier.notify('withdrawal.rejected', tx);
+    return tx;
   }
 
   async get(id: string): Promise<Transaction> {

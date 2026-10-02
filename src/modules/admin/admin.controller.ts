@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Post, BadRequestException } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, BadRequestException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
+import { TransactionsService } from '../transactions/transactions.service';
+import { AdminKeyGuard } from '../../common/admin-key.guard';
 
 class EnrollCustodyDto {
   @ApiProperty({ description: 'Chain code, e.g. BTC, ETH, SOL' })
@@ -44,11 +46,13 @@ class EnrollCustodyDto {
  */
 @ApiTags('admin')
 @ApiSecurity('x-api-key')
+@UseGuards(AdminKeyGuard)
 @Controller('api/v1/admin')
 export class AdminController {
   constructor(
     @InjectRepository(CustodyAccount)
     private readonly custody: Repository<CustodyAccount>,
+    private readonly transactions: TransactionsService,
   ) {}
 
   @Post('custody')
@@ -83,5 +87,21 @@ export class AdminController {
   @ApiOperation({ summary: 'List enrolled custody wallets per chain' })
   list() {
     return this.custody.find();
+  }
+
+  @Post('withdrawals/:id/approve')
+  @ApiOperation({
+    summary: 'Approve a parked requires_approval withdrawal — broadcasts it',
+  })
+  approve(@Param('id') id: string) {
+    return this.transactions.approveWithdrawal(id);
+  }
+
+  @Post('withdrawals/:id/reject')
+  @ApiOperation({
+    summary: 'Reject a parked withdrawal — reverses the ledger debit',
+  })
+  reject(@Param('id') id: string) {
+    return this.transactions.rejectWithdrawal(id);
   }
 }

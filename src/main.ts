@@ -2,14 +2,33 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+import { makeRateLimiter } from './common/rate-limit';
+import { requestId } from './common/request-id';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
   const config = app.get(ConfigService);
+
+  app.use(requestId);
+
+  // Inbound bodies are bounded: webhook payloads are small by design; a large
+  // body is either abuse or a misconfigured producer.
+  app.use(json({ limit: '256kb' }));
+  app.use(urlencoded({ limit: '256kb', extended: true }));
 
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, transform: true }),
+  );
+
+  // Webhook ingress is the only unauthenticated write surface — cap it.
+  app.use(
+    '/webhooks',
+    makeRateLimiter({
+      windowMs: 60_000,
+      max: config.get<number>('service.webhookRateLimitPerMinute') ?? 120,
+    }),
   );
 
   const docs = new DocumentBuilder()

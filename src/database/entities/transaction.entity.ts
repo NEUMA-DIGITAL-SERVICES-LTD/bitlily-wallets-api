@@ -12,7 +12,13 @@ import {
 import { Wallet } from './wallet.entity';
 
 export type TxDirection = 'inbound' | 'outbound';
-export type TxStatus = 'pending' | 'confirmed' | 'failed' | 'reorged';
+export type TxStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'failed'
+  | 'reorged'
+  | 'requires_approval'
+  | 'rejected';
 
 /**
  * An observed or initiated on-chain transaction. Uniqueness on

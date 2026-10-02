@@ -1,4 +1,5 @@
-import { Controller, Get, NotFoundException, Param } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Query, UnauthorizedException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -12,8 +13,10 @@ import { Public } from '../../common/api-key.guard';
  * transaction WE created (raw.kmsRequestId), so the daemon can never be
  * tricked into signing a transfer our service didn't originate.
  *
- * Public by design — KMS has no API key; configure the daemon's external
- * checks URL to {base}/api/v1/kms/verify. Rate-limit at the edge in prod.
+ * Public by design — KMS has no API key. Set KMS_VERIFY_TOKEN and embed it
+ * in the daemon's external-checks URL ({base}/api/v1/kms/verify/{id}?token=…)
+ * so the endpoint can't be probed for pending-withdrawal existence. Also
+ * rate-limit at the edge in prod.
  */
 @ApiTags('kms')
 @Controller('api/v1/kms')
@@ -21,11 +24,19 @@ export class KmsVerifyController {
   constructor(
     @InjectRepository(Transaction)
     private readonly txs: Repository<Transaction>,
+    private readonly config: ConfigService,
   ) {}
 
   @Get('verify/:requestId')
   @Public()
-  async verify(@Param('requestId') requestId: string) {
+  async verify(
+    @Param('requestId') requestId: string,
+    @Query('token') token?: string,
+  ) {
+    const expected = process.env.KMS_VERIFY_TOKEN ?? this.config.get<string>('kmsVerifyToken');
+    if (expected && token !== expected) {
+      throw new UnauthorizedException();
+    }
     const rows = await this.txs.find({
       where: { direction: 'outbound', status: 'pending' },
       take: 200,

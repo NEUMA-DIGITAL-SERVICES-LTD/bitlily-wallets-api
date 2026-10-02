@@ -3,10 +3,13 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { ApiKeyGuard, Public } from './common/api-key.guard';
 import {
   confirmationsConfig,
   detectionConfig,
+  limitsConfig,
+  reconcileConfig,
   serviceConfig,
   sweepConfig,
   tatumConfig,
@@ -23,12 +26,46 @@ import { SecretsModule } from './secrets/secrets.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { SweepsModule } from './modules/sweeps/sweeps.module';
 
-@Controller('api/v1/health')
+@Controller('api/v1')
 class HealthController {
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly config: ConfigService,
+  ) {}
+
+  /** Liveness — process is up. Never checks dependencies. */
   @Public()
-  @Get()
+  @Get('health')
   health() {
     return { status: 'ok', ts: new Date().toISOString() };
+  }
+
+  /**
+   * Readiness — DB reachable + provider configured. Deliberately does NOT make
+   * a live provider call: LB polls are frequent, provider calls cost credits,
+   * and a transient Tatum blip shouldn't drain a healthy node. Provider health
+   * is surfaced by poller/reconciliation errors, not this endpoint.
+   */
+  @Public()
+  @Get('ready')
+  async ready() {
+    const providerConfigured = !!this.config.get<string>('tatum.apiKey');
+    try {
+      await this.dataSource.query('SELECT 1');
+      return {
+        status: 'ready',
+        db: 'up',
+        provider: providerConfigured ? 'configured' : 'missing_key',
+        ts: new Date().toISOString(),
+      };
+    } catch {
+      return {
+        status: 'not_ready',
+        db: 'down',
+        provider: providerConfigured ? 'configured' : 'missing_key',
+        ts: new Date().toISOString(),
+      };
+    }
   }
 }
 
@@ -36,7 +73,7 @@ class HealthController {
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig],
+      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig, limitsConfig, reconcileConfig],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

@@ -55,20 +55,36 @@ export class NotifierService {
         reference: tx.reference,
       },
     };
+    const row = await this.enqueue(event, body, tx.id);
+    if (!row) return;
+    await this.deliver(row);
+  }
+
+  /**
+   * Non-transaction events (reconciliation divergence, ops alerts) — same
+   * outbox durability, arbitrary payload.
+   */
+  async notifyEvent(event: string, data: Record<string, unknown>): Promise<void> {
+    const row = await this.enqueue(event, { event, data }, undefined);
+    if (!row) return;
+    await this.deliver(row);
+  }
+
+  private async enqueue(
+    event: string,
+    payload: object,
+    transactionId?: string,
+  ): Promise<OutboundEvent | null> {
     const row = await this.outbox.save(
-      this.outbox.create({
-        event,
-        transactionId: tx.id,
-        payload: body,
-      }),
+      this.outbox.create({ event, transactionId: transactionId ?? null, payload }),
     );
     if (!this.url) {
       // No consumer configured (local dev) — leave pending; the sweep would
       // burn attempts pointlessly. Mark sent so the outbox stays clean.
       await this.outbox.update(row.id, { status: 'sent', sentAt: new Date() });
-      return;
+      return null;
     }
-    await this.deliver(row);
+    return row;
   }
 
   /** Retry sweep — picks up pending events past their backoff gate. */
