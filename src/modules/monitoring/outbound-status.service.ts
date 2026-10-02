@@ -1,14 +1,15 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
+import { InjectEntityManager, InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
 } from '../../providers/provider.interface';
+import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
 import { errMsg } from '../../common/errors';
 
@@ -35,7 +36,9 @@ export class OutboundStatusService {
   constructor(
     @InjectRepository(Transaction)
     private readonly txs: Repository<Transaction>,
+    @InjectEntityManager() private readonly em: EntityManager,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
+    private readonly ledger: LedgerService,
     private readonly notifier: NotifierService,
     private readonly config: ConfigService,
   ) {}
@@ -47,6 +50,7 @@ export class OutboundStatusService {
     try {
       const pending = await this.txs.find({
         where: { direction: 'outbound', status: 'pending' },
+        relations: ['wallet'],
         order: { createdAt: 'ASC' },
         take: 100,
       });
@@ -65,6 +69,42 @@ export class OutboundStatusService {
     // We can't auto-resolve it without knowing what the provider actually
     // broadcast — so detect it and alert loudly, once.
     if (tx.txid?.startsWith('pending:')) {
+      const kmsRequestId = (tx.raw as any)?.kmsRequestId;
+      // KMS path: the send entered Tatum's pending-signature queue — ask
+      // the provider for its status instead of alerting.
+      if (kmsRequestId && this.provider.getPendingSignature) {
+        try {
+          const sig = await this.provider.getPendingSignature(kmsRequestId);
+          if (sig?.txid) {
+            tx.txid = sig.txid;
+            tx.raw = { ...(tx.raw ?? {}), signingComplete: true };
+            await this.txs.save(tx);
+            await this.notifier.notify('transaction.broadcast', tx);
+            // Fall through below — next statement continues the refresh.
+          } else if (sig?.status === 'failed' || sig === null) {
+            // Daemon rejected/dropped the request — never broadcast:
+            // reverse the withdrawal debit.
+            await this.em.transaction(async (m) => {
+              await m.update(Transaction, tx.id, { status: 'failed' });
+              await this.ledger.postEntry(
+                m, tx.wallet, tx, 'withdrawal_reversal', tx.amount, 'credit',
+              );
+            });
+            await this.notifier.notify('withdrawal.failed', tx);
+            this.logger.warn(
+              `KMS request ${kmsRequestId} for tx ${tx.id} ` +
+              `${sig === null ? 'not found' : 'rejected'} — debit reversed`,
+            );
+          }
+          if (!tx.txid.startsWith('pending:')) {
+            return this.refresh(tx); // got real txid — continue lifecycle
+          }
+          return; // still awaiting signature
+        } catch (e) {
+          this.logger.warn(`KMS status check failed for tx ${tx.id}: ${errMsg(e)}`);
+          return;
+        }
+      }
       const stale = Date.now() - tx.createdAt.getTime() > 10 * 60 * 1000;
       const alerted = (tx.raw as any)?.reconcileAlerted === true;
       if (stale && !alerted) {

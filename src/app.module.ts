@@ -8,6 +8,7 @@ import {
   confirmationsConfig,
   detectionConfig,
   serviceConfig,
+  sweepConfig,
   tatumConfig,
   webhookConfig,
 } from './config/configuration';
@@ -18,6 +19,9 @@ import { WalletsModule } from './modules/wallets/wallets.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { MonitoringModule } from './modules/monitoring/monitoring.module';
 import { ProvidersModule } from './providers/providers.module';
+import { SecretsModule } from './secrets/secrets.module';
+import { AdminModule } from './modules/admin/admin.module';
+import { SweepsModule } from './modules/sweeps/sweeps.module';
 
 @Controller('api/v1/health')
 class HealthController {
@@ -32,7 +36,7 @@ class HealthController {
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig],
+      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
@@ -53,6 +57,9 @@ class HealthController {
     TransactionsModule,
     WebhooksModule,
     MonitoringModule,
+    SecretsModule,
+    AdminModule,
+    SweepsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: ApiKeyGuard }],

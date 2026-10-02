@@ -11,6 +11,8 @@ export interface ChainAccountMaterial {
   baseAddress?: string;
   /** Opaque reference to signing material in KMS/secret store — never secrets. */
   secretRef?: string;
+  /** Secret material to enroll in the secret store — never persisted. */
+  mnemonic?: string;
 }
 
 export interface ProviderTx {
@@ -37,6 +39,13 @@ export interface SendTxParams {
   asset: AssetDef;
   /** Internal account the funds are drawn from. */
   fromAccountId: string;
+  /** KMS signatureId for the account's enrolled material (required under KMS). */
+  signatureId?: string | null;
+  /**
+   * HD derivation index of the deposit address being spent from — needed by
+   * KMS-managed mnemonic wallets to sign a derived address (sweeps).
+   */
+  derivationIndex?: number | null;
   toAddress: string;
   amount: string;
   /** Client reference echoed on the transaction record. */
@@ -44,7 +53,21 @@ export interface SendTxParams {
 }
 
 export interface SendTxResult {
-  txid: string;
+  /**
+   * On-chain txid — known immediately for direct-key broadcasts. Absent
+   * under KMS: signing is async (the daemon picks up the pending request),
+   * so the request id is returned instead and resolved later.
+   */
+  txid?: string;
+  /** KMS pending-signature request id — resolve via getPendingSignature. */
+  kmsRequestId?: string;
+}
+
+export interface PendingSignatureStatus {
+  /** e.g. PENDING | SUCCESS | REJECTED/FAILED — provider-normalized. */
+  status: 'pending' | 'signed' | 'failed';
+  /** Present once signed+broadcast. */
+  txid?: string;
 }
 
 export interface SubscriptionResult {
@@ -85,6 +108,13 @@ export interface BlockchainProvider {
 
   /** Broadcast a signed withdrawal/send. */
   sendTransaction(params: SendTxParams): Promise<SendTxResult>;
+
+  /**
+   * KMS-only: resolve a pending signature request to its eventual txid.
+   * Used by the outbound sweeper to advance rows that entered KMS's
+   * pending queue — null when the provider isn't KMS-backed.
+   */
+  getPendingSignature?(requestId: string): Promise<PendingSignatureStatus | null>;
 
   /** Register address monitoring (provider-side webhook subscription). */
   createAddressSubscription?(address: string, chain: Chain): Promise<SubscriptionResult>;

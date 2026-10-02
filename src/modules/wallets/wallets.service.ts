@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
+import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { enabledAssets, getAsset } from '../../config/assets';
@@ -18,6 +19,7 @@ import {
   BlockchainProvider,
   ChainAccountMaterial,
 } from '../../providers/provider.interface';
+import { SECRET_STORE, SecretStore } from '../../secrets/secret-store';
 import { LedgerService } from '../../ledger/ledger.service';
 import { errMsg } from '../../common/errors';
 
@@ -28,12 +30,14 @@ export class WalletsService {
   constructor(
     @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
     @InjectRepository(WalletAccount) private readonly accounts: Repository<WalletAccount>,
+    @InjectRepository(CustodyAccount) private readonly custody: Repository<CustodyAccount>,
     @InjectRepository(DepositAddress) private readonly addresses: Repository<DepositAddress>,
     @InjectRepository(Transaction) private readonly txs: Repository<Transaction>,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
     private readonly ledger: LedgerService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    @Inject(SECRET_STORE) private readonly secretStore: SecretStore,
   ) {}
 
   /**
@@ -50,38 +54,65 @@ export class WalletsService {
     if (existing) return existing;
 
     const chains = [...new Set(enabledAssets().map((a) => a.chain))];
+    const useKms = this.config.get('tatum.useKms') === true;
+
+    // Two account models:
+    //  KMS   — all wallets share the chain's enrolled custody account
+    //          (custody_accounts row: xpub + signatureId). Material never
+    //          exists here; deposit addresses are index-derived under one
+    //          master wallet, signed by signatureId + index.
+    //  dev   — per-wallet material generated via the provider and enrolled
+    //          into the env store (discarded); sends sign via TESTNET_PK_*.
+    let enrolled: {
+      chain: string;
+      material: { xpub?: string; baseAddress?: string };
+      secretRef: string | null;
+    }[] = [];
+    if (useKms) {
+      for (const chain of chains) {
+        const custody = await this.custody.findOne({ where: { chain } });
+        if (!custody) {
+          throw new BadRequestException(
+            `No enrolled custody wallet for ${chain} — run ` +
+            `tatum-kms generatemanagedwallet ${chain} on the KMS host, then ` +
+            `POST /api/v1/admin/custody.`,
+          );
+        }
+        enrolled.push({
+          chain,
+          material: { xpub: custody.xpub, baseAddress: custody.baseAddress },
+          secretRef: custody.secretRef,
+        });
+      }
+    } else {
+      for (const chain of chains) {
+        const material = await this.provider.createChainAccount(chain);
+        // HD chains return a mnemonic; account-model chains (SOL) return the
+        // key itself in material.mnemonic — map by shape, not chain name.
+        const secretRef = await this.secretStore.enroll(chain, {
+          mnemonic: material.xpub ? material.mnemonic : undefined,
+          privateKey: material.baseAddress ? material.mnemonic : undefined,
+        });
+        enrolled.push({ chain, material, secretRef });
+      }
+    }
 
     const wallet = await this.dataSource.transaction(async (em) => {
       const w = await em.save(em.create(Wallet, { externalUserId }));
-      for (const chain of chains) {
-        const material = await this.provider.createChainAccount(chain);
-        // TODO(prod): persist material.mnemonic into KMS/Vault and store only
-        // the secretRef. Scaffold keeps testnet secrets in env; mnemonic is
-        // intentionally NOT written to the DB.
-        this.persistSecretRef(chain, material);
+      for (const { chain, material, secretRef } of enrolled) {
         await em.save(
           em.create(WalletAccount, {
             wallet: w,
             chain,
             xpub: material.xpub,
             baseAddress: material.baseAddress,
+            secretRef,
           }),
         );
       }
       return w;
     });
     return this.wallets.findOneOrFail({ where: { id: wallet.id }, relations: ['accounts'] });
-  }
-
-  private persistSecretRef(chain: string, material: ChainAccountMaterial & { mnemonic?: string }) {
-    // Placeholder: in production this calls KMS/Vault. For now, if a mnemonic
-    // comes back we surface a loud warning — it must never hit the DB or logs.
-    if (material.mnemonic) {
-      this.logger.warn(
-        `Wallet material for ${chain} generated — store in KMS before production. ` +
-          `Mnemonic is held in memory only and discarded.`,
-      );
-    }
   }
 
   async getWalletOrThrow(id: string): Promise<Wallet> {
@@ -137,13 +168,11 @@ export class WalletsService {
         }
       }
 
-      const index = account.baseAddress ? 0 : account.nextDerivationIndex;
+      const index = account.baseAddress ? 0 : await this.allocIndex(em, account.chain);
       const address = await this.provider.generateDepositAddress(
         { chain: account.chain as any, xpub: account.xpub, baseAddress: account.baseAddress },
         index,
       );
-      if (!account.baseAddress) account.nextDerivationIndex = index + 1;
-      await em.save(account);
 
       const dep = await em.save(
         em.create(DepositAddress, {
@@ -178,6 +207,22 @@ export class WalletsService {
       }
       return dep;
     });
+  }
+
+  /**
+   * Global HD index allocation. With a shared custody xpub (KMS mode)
+   * per-wallet counters would collide across wallets, so the counter lives
+   * at chain level and increments atomically — safe under concurrency.
+   */
+  private async allocIndex(em: EntityManager, chain: string): Promise<number> {
+    const [row] = await em.query(
+      `INSERT INTO chain_counters (chain, next_index) VALUES ($1, 1)
+       ON CONFLICT (chain) DO UPDATE
+       SET next_index = chain_counters.next_index + 1
+       RETURNING next_index`,
+      [chain],
+    );
+    return row.next_index - 1;
   }
 
   /**

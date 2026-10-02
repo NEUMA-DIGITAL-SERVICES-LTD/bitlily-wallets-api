@@ -8,6 +8,7 @@ import {
   BlockchainProvider,
   ChainAccountMaterial,
   FeeEstimate,
+  PendingSignatureStatus,
   ProviderTx,
   SendTxParams,
   SendTxResult,
@@ -302,6 +303,18 @@ export class TatumProvider implements BlockchainProvider {
   async sendTransaction(params: SendTxParams): Promise<SendTxResult> {
     const path = CHAIN_PATH[params.asset.chain];
     const useKms = this.config.get('tatum.useKms') === true;
+    // Under KMS the signatureId IS the custody reference enrolled at wallet
+    // creation — absent means the account was created before KMS was wired
+    // or enrollment failed. Fail loudly; never fall back to env keys here.
+    if (useKms && !params.signatureId) {
+      throw new Error(
+        `No signatureId on account ${params.fromAccountId} — ` +
+        `material was never enrolled in KMS.`,
+      );
+    }
+    const signer = useKms
+      ? { signatureId: params.signatureId, ...(params.derivationIndex != null ? { index: params.derivationIndex } : {}) }
+      : { fromPrivateKey: process.env[`TESTNET_PK_${params.asset.chain}`] };
     // Production path: signatureId references KMS-held keys — private keys
     // never transit this service. Testnet/dev path may pass a private key
     // from env via the caller (documented, testnet-only).
@@ -318,16 +331,14 @@ export class TatumProvider implements BlockchainProvider {
         amount: params.amount,
         contractAddress: params.asset.contract,
         digits: params.asset.decimals,
-        ...(useKms
-          ? { signatureId: params.fromAccountId }
-          : { fromPrivateKey: process.env[`TESTNET_PK_${params.asset.chain}`] }),
+        ...signer,
         // This endpoint takes gasLimit/gasPrice flat — a nested `fee`
         // object is silently ignored and Tatum falls back to gasLimit
         // 21000, which fails ERC-20 transfers ("gasLimit too low").
         ...(fee ?? {}),
       };
       const { data } = await this.http.post('/v3/blockchain/token/transaction', tokenBody);
-      return { txid: data.txId ?? data.txid ?? data.hash };
+      return this.sendResult(data, useKms);
     }
 
     // UTXO chains (BTC/LTC) have a fundamentally different send schema:
@@ -337,23 +348,29 @@ export class TatumProvider implements BlockchainProvider {
     if (params.asset.chain === 'BTC' || params.asset.chain === 'LTC') {
       const fromAddr = process.env[`TESTNET_FROM_${params.asset.chain}`];
       const pk = process.env[`TESTNET_PK_${params.asset.chain}`];
-      if (!fromAddr || (!pk && !useKms)) {
+      if (!useKms && (!fromAddr || !pk)) {
         throw new Error(
           `UTXO send requires TESTNET_FROM_${params.asset.chain} + ` +
           `TESTNET_PK_${params.asset.chain} (or KMS)`,
         );
       }
+      // Under KMS the signatureId alone identifies the signing key; the
+      // address field still names the UTXO source, so it stays required.
+      if (useKms && !fromAddr && params.derivationIndex == null) {
+        throw new Error(`UTXO send under KMS requires a source address or derivation index`);
+      }
       // Tatum requires `fee` + `changeAddress` together or neither — omitting
       // both lets it auto-fee and return change to the sender address.
       const utxoBody = {
         fromAddress: [
-          useKms ? { address: fromAddr, signatureId: params.fromAccountId }
-                 : { address: fromAddr, privateKey: pk },
+          useKms
+            ? { address: fromAddr, signatureId: params.signatureId, ...(params.derivationIndex != null ? { index: params.derivationIndex } : {}) }
+            : { address: fromAddr, privateKey: pk },
         ],
         to: [{ address: params.toAddress, value: Number(params.amount) }],
       };
       const { data } = await this.http.post(`/v3/${path}/transaction`, utxoBody);
-      return { txid: data.txId ?? data.txid ?? data.hash };
+      return this.sendResult(data, useKms);
     }
 
     const body: Record<string, unknown> = {
@@ -361,16 +378,45 @@ export class TatumProvider implements BlockchainProvider {
       amount: params.amount,
       // Tatum's send schema requires currency — the chain's native symbol.
       currency: params.asset.code,
-      ...(useKms
-        ? { signatureId: params.fromAccountId }
-        : { fromPrivateKey: process.env[`TESTNET_PK_${params.asset.chain}`] }),
+      ...signer,
     };
     if (isEvm) {
       const fee = await this.estimateEvmFee(path, params);
       if (fee) body.fee = fee;
     }
     const { data } = await this.http.post(`/v3/${path}/transaction`, body);
-    return { txid: data.txId ?? data.txid ?? data.hash };
+    return this.sendResult(data, useKms);
+  }
+
+  /**
+   * Direct-key sends return a txid immediately; KMS sends return a pending
+   * signature request id — the daemon signs+broadcasts asynchronously and
+   * the txid arrives later via /v3/kms/{requestId}.
+   */
+  private sendResult(data: any, useKms: boolean): SendTxResult {
+    const txid = data?.txId ?? data?.txid ?? data?.hash;
+    if (!useKms) return { txid };
+    if (txid) return { txid, kmsRequestId: data.id };
+    return { kmsRequestId: data?.id ?? data?.signatureId };
+  }
+
+  /** KMS pending-request status — the sweeper resolves txids through this. */
+  async getPendingSignature(requestId: string): Promise<PendingSignatureStatus | null> {
+    try {
+      const { data } = await this.http.get(`/v3/kms/${requestId}`);
+      const s = String(data?.status ?? '').toUpperCase();
+      const txid = data?.txId ?? data?.txid;
+      if (txid || s === 'COMPLETED' || s === 'SUCCESS') {
+        return { status: 'signed', txid };
+      }
+      if (s === 'PENDING' || s === 'PROCESSING' || s === '') {
+        return { status: 'pending' };
+      }
+      return { status: 'failed' };
+    } catch (err: any) {
+      if (err.response?.status === 404) return null;
+      throw err;
+    }
   }
 
   /**

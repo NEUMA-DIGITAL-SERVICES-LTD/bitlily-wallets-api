@@ -42,6 +42,14 @@ export class WalletAccount {
   @Column({ name: 'base_address', nullable: true })
   baseAddress: string;
 
+  /**
+   * Opaque custody reference — under KMS this is the Tatum KMS
+   * signatureId for the enrolled mnemonic/key. Null under dev env-key
+   * signing. NEVER contains secret material itself.
+   */
+  @Column({ name: 'secret_ref', nullable: true })
+  secretRef: string | null;
+
   /** Next unused HD derivation index for this account. */
   @Column({ name: 'next_derivation_index', type: 'int', default: 0 })
   nextDerivationIndex: number;

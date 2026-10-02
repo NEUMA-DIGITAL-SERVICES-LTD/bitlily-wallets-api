@@ -11,6 +11,8 @@ export const tatumConfig = registerAs('tatum', () => ({
   baseUrl: process.env.TATUM_BASE_URL ?? 'https://api.tatum.io',
   network: (process.env.TATUM_NETWORK ?? 'testnet') as 'testnet' | 'mainnet',
   useKms: process.env.TATUM_USE_KMS === 'true',
+  kmsUrl: process.env.KMS_URL ?? '',
+  kmsApiKey: process.env.KMS_API_KEY ?? '',
 }));
 
 export const webhookConfig = registerAs('webhook', () => ({
@@ -22,6 +24,10 @@ export const detectionConfig = registerAs('detection', () => ({
   strategy: (process.env.DEPOSIT_DETECTION ?? 'polling') as 'polling' | 'webhook',
   pollIntervalMs: parseInt(process.env.DEPOSIT_POLL_INTERVAL_MS ?? '120000', 10),
   addressTtlMinutes: parseInt(process.env.DEPOSIT_ADDRESS_TTL_MINUTES ?? '60', 10),
+}));
+
+export const sweepConfig = registerAs('sweep', () => ({
+  gasTopUp: parseFloat(process.env.SWEEP_GAS_TOP_UP ?? '0.005'),
 }));
 
 export const confirmationsConfig = registerAs('confirmations', () => ({

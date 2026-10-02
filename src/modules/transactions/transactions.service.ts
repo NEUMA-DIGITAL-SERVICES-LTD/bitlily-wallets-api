@@ -85,16 +85,34 @@ export class TransactionsService {
       return t;
     });
 
-    let txid: string;
     try {
       const result = await this.provider.sendTransaction({
         asset,
         fromAccountId: account.id,
+        signatureId: account.secretRef,
         toAddress: dto.toAddress,
         amount: dto.amount,
         reference: dto.reference,
       });
-      txid = result.txid;
+      if (result.kmsRequestId) {
+        // KMS signing is async — the daemon picks up the pending request,
+        // signs, broadcasts. txid stays a placeholder until the outbound
+        // sweeper resolves it via getPendingSignature.
+        tx.raw = { ...(tx.raw ?? {}), kmsRequestId: result.kmsRequestId };
+        await this.txs.update(tx.id, { raw: tx.raw });
+        if (result.txid) {
+          tx.txid = result.txid;
+          await this.txs.update(tx.id, { txid: result.txid });
+        }
+        await this.notifier.notify('withdrawal.pending_signature', tx);
+        return tx;
+      }
+      const txid = result.txid;
+      if (!txid) throw new Error('provider returned no txid');
+      await this.txs.update(tx.id, { txid });
+      tx.txid = txid;
+      await this.notifier.notify('transaction.broadcast', tx);
+      return tx;
     } catch (e) {
       // Broadcast failed — reverse the debit so the ledger stays truthful.
       await this.dataSource.transaction(async (em) => {
@@ -103,13 +121,9 @@ export class TransactionsService {
           em, account.wallet, tx, 'withdrawal_reversal', dto.amount, 'credit',
         );
       });
+      if (e instanceof BadGatewayException) throw e;
       throw new BadGatewayException(`Broadcast failed: ${errMsg(e)}`);
     }
-
-    await this.txs.update(tx.id, { txid });
-    tx.txid = txid;
-    await this.notifier.notify('transaction.broadcast', tx);
-    return tx;
   }
 
   async get(id: string): Promise<Transaction> {
