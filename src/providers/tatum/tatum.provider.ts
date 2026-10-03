@@ -259,11 +259,13 @@ export class TatumProvider implements BlockchainProvider {
         };
       }
       case 'TRON': {
-        const outs = (data.raw_data?.contract?.[0]?.parameter?.value ?? {})
+        // `?? {}` made the old ternary always-truthy — the unsafe branch
+        // then dereferenced raw_data.contract on txs that lack raw_data.
+        const v = data.raw_data?.contract?.[0]?.parameter?.value;
+        const outs = v
           ? [{
-              address: data.raw_data.contract[0].parameter.value.to_address
-                ?? data.raw_data.contract[0].parameter.value.contract_address ?? '',
-              amount: String((data.raw_data.contract[0].parameter.value.amount ?? 0) / 1e6),
+              address: v.to_address ?? v.contract_address ?? '',
+              amount: String((v.amount ?? 0) / 1e6),
             }]
           : [];
         const conf = data.ret?.[0]?.contractRet === 'SUCCESS' ? 20 : 0;
