@@ -130,8 +130,11 @@ export class TatumProvider implements BlockchainProvider {
           `unsupported until a Solana-RPC-capable provider is wired`,
         );
       }
+      // Universal token-balance route — takes chain CODES (ETH, MATIC…),
+      // not path names. The /v3/{chain}/account/balance/erc20/ variant
+      // exists on ethereum but 404s on polygon (verified live).
       const { data } = await this.http.get(
-        `/v3/${path}/account/balance/erc20/${address}?contractAddress=${asset.contract}`,
+        `/v3/blockchain/token/balance/${asset.chain}/${asset.contract}/${address}`,
       );
       return fromRaw(String(data.balance ?? data ?? '0'), asset.decimals);
     }

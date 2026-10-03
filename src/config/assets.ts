@@ -51,7 +51,9 @@ export const ASSET_REGISTRY: AssetDef[] = [
   { code: 'USDC_ETH', chain: 'ETH', type: 'token', decimals: 6, contract: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
     // Official Circle testnet USDC on Sepolia (faucet.circle.com).
     testnetContract: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238' },
-  { code: 'USDC_MATIC', chain: 'POLYGON', type: 'token', decimals: 6, contract: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359' },
+  { code: 'USDC_MATIC', chain: 'POLYGON', type: 'token', decimals: 6, contract: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    // Circle's official testnet USDC on Amoy (faucet.circle.com).
+    testnetContract: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582' },
   // Tatum v3 exposes no SPL-token endpoints (balances, sends) — this
   // asset is unservable through the current provider. Kept registered as
   // the scope record; enabled only if explicitly listed in ENABLED_ASSETS
