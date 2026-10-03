@@ -106,7 +106,7 @@ broadcast/debited/confirmed (sends) — not just code review.
 | USDT_ETH | Sepolia | ✅ | ✅ | self-deployed mock — no canonical Sepolia USDT |
 | USDT_TRON | Shasta | ✅ | ✅ **KMS-signed** | Shasta test contract `TG3XXy...` |
 | USDC_MATIC | Amoy | ✅ | ✅ **KMS-signed** | real Circle Amoy USDC `0x41E9...7582` |
-| USDT_MATIC | Amoy | — | ⚠️ by-analogy | no Tether testnet deployment exists; same code path as USDC_MATIC |
+| USDT_MATIC | Amoy | — | ⚠️ by-analogy | no Tether testnet exists; same code path as USDC_MATIC — requires mainnet smoke test (checklist) |
 | USDC_SOL | devnet | ✅ | ✅ **KMS-signed** | real Circle devnet USDC `4zMMC9...ncDU`; SPL rides unified token routes |
 
 Sweep engine (deposit → treasury consolidation) is **live-proven** on LTC:
@@ -147,6 +147,8 @@ Migrations run automatically on boot (`migrationsRun`).
 - [ ] IP-allowlist webhook ingress at LB (Tatum egress ranges)
 - [ ] Per-environment `SERVICE_API_KEYS`, rotate on schedule
 - [ ] Confirm the signed-off asset×chain matrix matches `assets.ts`
+- [ ] Verify mainnet `contract`/`decimals` for every enabled token against the issuer's canonical registry (Circle/Tether docs) — testnet never exercises these values
+- [ ] **USDT_MATIC mainnet smoke test** — no Tether testnet exists, so this asset is verified by-analogy only (same code path as USDC_MATIC, proven 5×). Before enabling real flow: deposit ~1 USDT to a treasury address, confirm poll→credit, then withdraw ~1 USDT and confirm on-chain `transfer()` shape + ledger settle. Catches contract quirks (fees/blacklist) no testnet can.
 - [ ] Main app verifies `X-Webhook-Signature` on inbound events
 - [ ] `wallet.dat` backup + restore drill on the KMS host
 - [ ] Testnet end-to-end pass on every enabled asset before mainnet key
