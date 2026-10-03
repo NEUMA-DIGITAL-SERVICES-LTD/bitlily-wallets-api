@@ -39,7 +39,10 @@ export const ASSET_REGISTRY: AssetDef[] = [
 
   // Stablecoins — confirm per-chain contract addresses against the signed-off
   // asset matrix before mainnet; testnet deployments use provider test assets.
-  { code: 'USDT_TRON', chain: 'TRON', type: 'token', decimals: 6, contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' },
+  { code: 'USDT_TRON', chain: 'TRON', type: 'token', decimals: 6, contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+    // Canonical test USDT on Shasta (Tatum's TRON testnet is Shasta,
+    // not Nile — verified by block-hash comparison).
+    testnetContract: 'TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs' },
   { code: 'USDT_ETH', chain: 'ETH', type: 'token', decimals: 6, contract: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
     // Test-deployed mock on Sepolia (no official Tether testnet deployment
     // exists). Supply held by the TESTNET_PK_ETH test wallet.

@@ -414,6 +414,23 @@ export class TatumProvider implements BlockchainProvider {
       return this.sendResult(data, useKms);
     }
 
+    // TRC20 sends use Tatum's dedicated trc20 endpoint — posting a token
+    // transfer to /v3/tron/transaction would send native TRX instead.
+    // KMS signs via signatureId; `from` names the treasury holding the
+    // tokens. feeLimit is required by the schema (TRX, not sun).
+    if (params.asset.chain === 'TRON' && isToken) {
+      const trc20Body = {
+        to: params.toAddress,
+        amount: params.amount,
+        tokenAddress: params.asset.contract,
+        from: params.sourceAddress,
+        feeLimit: 10,
+        ...signer,
+      };
+      const { data } = await this.http.post(`/v3/tron/trc20/transaction`, trc20Body);
+      return this.sendResult(data, useKms);
+    }
+
     const body: Record<string, unknown> = {
       to: params.toAddress,
       amount: params.amount,
