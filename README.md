@@ -96,12 +96,20 @@ broadcast/debited/confirmed (sends) — not just code review.
 
 | Asset | Testnet | Deposit | Send | Notes |
 |---|---|---|---|---|
-| BTC | testnet3 | ✅ 2/2 confs | ✅ **KMS-signed** | fee+change pinned after live fee-burn bug |
+| BTC | testnet3 | ✅ | ✅ **KMS-signed** | fee+change pinned after live fee-burn bug |
 | ETH | Sepolia | ✅ | ✅ env-key + **KMS-signed** | full custody loop proven |
 | SOL | devnet | ✅ | ✅ **KMS-signed** | single-address custody; confs = finalized-at-index (see caveat) |
+| LTC | testnet4 | ✅ | ✅ **KMS-signed** | UTXO change/fee verified on-chain |
+| POL | Amoy | ✅ | ✅ **KMS-signed** | Tatum enum is `MATIC` — mapped in provider |
+| TRX | Shasta | ✅ | ✅ **KMS-signed** | Tatum v3 testnet-TRON is Shasta, NOT Nile |
 | USDC_ETH | Sepolia | ✅ | ✅ | official Circle testnet USDC |
 | USDT_ETH | Sepolia | ✅ | ✅ | self-deployed mock — no canonical Sepolia USDT |
-| LTC / POLYGON / TRON + tokens | — | ❌ registered only | ❌ | registry entries, zero live validation |
+| USDT_TRON | Shasta | ✅ | ✅ **KMS-signed** | Shasta test contract `TG3XXy...` |
+| USDC_MATIC | Amoy | ✅ | ✅ **KMS-signed** | real Circle Amoy USDC `0x41E9...7582` |
+| USDT_MATIC | Amoy | — | ⚠️ by-analogy | no Tether testnet deployment exists; same code path as USDC_MATIC |
+
+Sweep engine (deposit → treasury consolidation) is **live-proven** on LTC:
+index-1 custody key signed via KMS, four-eye verified, change/fee correct.
 
 **Known provider gaps (Tatum v3 surface limits):**
 - `USDC_SOL` — Tatum exposes no SPL-token balance endpoint, so SPL

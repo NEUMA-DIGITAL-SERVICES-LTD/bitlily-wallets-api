@@ -145,6 +145,24 @@ describe('TatumProvider', () => {
       });
     });
 
+    it('maps POLYGON→MATIC in the token-send chain field', async () => {
+      const post = jest
+        .fn()
+        .mockResolvedValueOnce({ data: { gasPrice: '1000000000', gasLimit: '65000' } })
+        .mockResolvedValueOnce({ data: { id: 'req-1' } });
+      const p = makeProvider({ post });
+      const USDC_MATIC: AssetDef = {
+        code: 'USDC_MATIC', chain: 'POLYGON', type: 'token', decimals: 6,
+        contract: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582',
+      } as AssetDef;
+      await p.sendTransaction(sendParams(USDC_MATIC));
+      const body = post.mock.calls[1][1];
+      expect(post.mock.calls[1][0]).toBe('/v3/blockchain/token/transaction');
+      expect(body.chain).toBe('MATIC');
+      expect(body.contractAddress).toBe(USDC_MATIC.contract);
+      expect(body.digits).toBe(6);
+    });
+
     it('refuses KMS send without signatureId — no env-key fallback', async () => {
       const p = makeProvider({ post: jest.fn() });
       await expect(

@@ -37,6 +37,14 @@ const TATUM_NATIVE_CURRENCY: Partial<Record<Chain, string>> = {
 };
 
 /**
+ * Tatum's API-wide chain enum for Polygon is MATIC — our internal code
+ * is POLYGON. Query endpoints (fee, token/balance) reject anything else.
+ */
+const TATUM_CHAIN_CODE: Partial<Record<Chain, string>> = {
+  POLYGON: 'MATIC',
+};
+
+/**
  * Convert raw token base units → decimal string using BigInt math.
  * Tatum token endpoints return smallest units ("20000000" = 20 USDC @ 6dp);
  * a value already containing '.' is assumed pre-normalized and passed
@@ -134,7 +142,7 @@ export class TatumProvider implements BlockchainProvider {
       // not path names. The /v3/{chain}/account/balance/erc20/ variant
       // exists on ethereum but 404s on polygon (verified live).
       const { data } = await this.http.get(
-        `/v3/blockchain/token/balance/${asset.chain}/${asset.contract}/${address}`,
+        `/v3/blockchain/token/balance/${TATUM_CHAIN_CODE[asset.chain] ?? asset.chain}/${asset.contract}/${address}`,
       );
       return fromRaw(String(data.balance ?? data ?? '0'), asset.decimals);
     }
@@ -320,7 +328,7 @@ export class TatumProvider implements BlockchainProvider {
     const path = CHAIN_PATH[asset.chain];
     try {
       const { data } = await this.http.post(`/v3/blockchain/estimation`, {
-        chain: asset.chain,
+        chain: TATUM_CHAIN_CODE[asset.chain] ?? asset.chain,
         type: 'TRANSFER',
         fromAddress: undefined,
         to: toAddress,
@@ -368,7 +376,9 @@ export class TatumProvider implements BlockchainProvider {
       // EVM gas estimate + margin — Tatum's default estimate can lag baseFee.
       const fee = await this.estimateEvmFee(path, params);
       const tokenBody: Record<string, unknown> = {
-        chain: params.asset.chain,
+        // Body fields take the chain CODE enum (ETH|MATIC|...), not our
+        // canonical name — 'POLYGON' 400s the same way the query path did.
+        chain: TATUM_CHAIN_CODE[params.asset.chain] ?? params.asset.chain,
         to: params.toAddress,
         amount: params.amount,
         contractAddress: params.asset.contract,
@@ -551,7 +561,8 @@ export class TatumProvider implements BlockchainProvider {
       return { gasLimit: String(data.gasLimit ?? defaultLimit), gasPrice: toGwei(wei) };
     } catch (e) {
       try {
-        const { data } = await this.http.get(`/v3/blockchain/fee/${params.asset.chain}`);
+        const feeChain = TATUM_CHAIN_CODE[params.asset.chain] ?? params.asset.chain;
+        const { data } = await this.http.get(`/v3/blockchain/fee/${feeChain}`);
         const wei = String(data?.fast ?? data?.medium ?? '0');
         if (wei === '0') return null;
         return { gasLimit: defaultLimit, gasPrice: toGwei(wei) };
