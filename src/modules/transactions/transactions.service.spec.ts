@@ -43,7 +43,12 @@ describe('TransactionsService.send', () => {
       postEntry: jest.fn(),
     };
     notifier = { notify: jest.fn() };
-    dataSource = { transaction: jest.fn(async (cb: any) => cb(m)) };
+    dataSource = {
+      transaction: jest.fn(async (cb: any) => cb(m)),
+      getRepository: jest.fn().mockReturnValue({
+        findOne: jest.fn().mockResolvedValue(null),
+      }),
+    };
     service = new TransactionsService(
       txs, accounts, provider, ledger, notifier,
       { get: jest.fn().mockReturnValue({}) } as any,

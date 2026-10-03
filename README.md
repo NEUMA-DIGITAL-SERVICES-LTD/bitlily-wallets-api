@@ -89,19 +89,28 @@ Token entries carry a `testnetContract` resolved automatically when
 `TATUM_NETWORK=testnet` (e.g. Sepolia USDC is a different contract than
 mainnet USDC).
 
-### Verified on live testnet (2026-10-01)
+### Verified on live testnet (updated 2026-10-03)
 
 "Verified" = a real on-chain tx detected/confirmed/credited (deposits) or
 broadcast/debited/confirmed (sends) — not just code review.
 
 | Asset | Testnet | Deposit | Send | Notes |
 |---|---|---|---|---|
-| BTC | testnet3 | ✅ 2/2 confs | ✅ broadcast | UTXO schema differs — fromAddress/fromUTXO |
-| ETH | Sepolia | ✅ | ✅ | round-trip verified |
-| SOL | devnet | ✅ | ❌ untested | single-address model (get-or-create) |
+| BTC | testnet3 | ✅ 2/2 confs | ✅ broadcast (env-key) | KMS UTXO path wired, not yet fired live |
+| ETH | Sepolia | ✅ | ✅ env-key + **KMS-signed** | full custody loop proven |
+| SOL | devnet | ✅ | ❌ untested | single-address custody (no xpub) |
 | USDC_ETH | Sepolia | ✅ | ✅ | official Circle testnet USDC |
 | USDT_ETH | Sepolia | ✅ | ✅ | self-deployed mock — no canonical Sepolia USDT |
 | LTC / POLYGON / TRON + tokens | — | ❌ registered only | ❌ | registry entries, zero live validation |
+
+### Custody status
+
+KMS signing is **proven end-to-end** on testnet: withdrawal → Tatum KMS
+pending request → daemon four-eye check → local sign → broadcast → sweeper
+resolves txid → ledger settles. Six chains enrolled (BTC/ETH/LTC/MATIC/TRON
+xpub-managed wallets + SOL single-address wallet) via `/admin/custody`.
+What remains is per-chain live sends (faucet-blocked) and the client's own
+KMS host — see `docs/KMS_SETUP.md`.
 
 ## Running
 
@@ -116,9 +125,12 @@ Migrations run automatically on boot (`migrationsRun`).
 ## Production checklist
 
 - [ ] Tatum PayGo+ plan — who owns this recurring cost?
-- [ ] `TATUM_USE_KMS=true` + self-hosted Tatum KMS (or Vault) for signing
+- [x] `TATUM_USE_KMS=true` + self-hosted Tatum KMS for signing — proven on testnet; prod needs the client's host + `generatemanagedwallet` per chain (see `docs/KMS_SETUP.md`)
+- [ ] `ADMIN_API_KEYS` + `KMS_VERIFY_TOKEN` set (admin endpoints fail-closed without them in prod)
+- [ ] `WITHDRAWAL_LIMITS` + `WITHDRAWAL_APPROVAL_ABOVE` signed off per asset
 - [ ] IP-allowlist webhook ingress at LB (Tatum egress ranges)
 - [ ] Per-environment `SERVICE_API_KEYS`, rotate on schedule
 - [ ] Confirm the signed-off asset×chain matrix matches `assets.ts`
 - [ ] Main app verifies `X-Webhook-Signature` on inbound events
+- [ ] `wallet.dat` backup + restore drill on the KMS host
 - [ ] Testnet end-to-end pass on every enabled asset before mainnet key
