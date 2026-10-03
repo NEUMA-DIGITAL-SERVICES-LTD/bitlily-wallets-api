@@ -113,6 +113,15 @@ export class TatumProvider implements BlockchainProvider {
         const hit = trc20.find((t) => t[asset.contract ?? '']);
         return hit ? fromRaw(String(hit[asset.contract ?? '']), asset.decimals) : '0';
       }
+      if (asset.chain === 'SOL') {
+        // Tatum v3 has no SPL-token balance endpoint — SOL token deposits
+        // cannot be monitored through this provider. Fail loudly rather
+        // than 404-spam every poll cycle.
+        throw new Error(
+          `Tatum cannot read SPL balances — ${asset.code} deposits are ` +
+          `unsupported until a Solana-RPC-capable provider is wired`,
+        );
+      }
       const { data } = await this.http.get(
         `/v3/${path}/account/balance/erc20/${address}?contractAddress=${asset.contract}`,
       );
@@ -149,8 +158,9 @@ export class TatumProvider implements BlockchainProvider {
         return Number(data.blocks ?? data.headers ?? 0);
       }
       case 'SOL': {
-        const { data } = await this.http.get(`/v3/${path}/info`);
-        return Number(data.blockHeight ?? data.slot ?? 0);
+        // Tatum v3 exposes no SOL chain-height endpoint; normalizeTx reports
+        // finalized (32) directly, so the sweeper's head-refinement is a no-op.
+        return 0;
       }
       case 'TRON': {
         const { data } = await this.http.get(`/v3/${path}/current/block`);
@@ -182,7 +192,7 @@ export class TatumProvider implements BlockchainProvider {
           txid, chain, outputs,
           confirmations: data.confirmations ?? 0,
           blockNumber: data.blockNumber ?? data.block_number ?? null,
-          fee: data.fee != null ? String(data.fee) : undefined,
+          fee: data.fee != null ? String(fromRaw(String(data.fee), 8)) : undefined,
           status: (data.confirmations ?? 0) > 0 ? 'confirmed' : 'pending',
           raw: data,
         };
@@ -220,12 +230,17 @@ export class TatumProvider implements BlockchainProvider {
             }),
           ).filter((o: any) => parseFloat(o.amount) > 0);
         }
+        // Tatum's SOL surface is thin — no info/web3 endpoint exists, so
+        // chain-tip confirmation counting isn't possible. Indexed txs are
+        // already settled; err:null + slot ⇒ treated as finalized (32 confs).
+        // Signature-status freshness is a documented gap.
+        const solOk = !meta.meta?.err;
         return {
           txid, chain, outputs: outs,
-          confirmations: meta.confirmationStatus === 'finalized' || meta.confirmationStatus === 'confirmed' ? 32 : 0,
+          confirmations: solOk ? 32 : 0,
           blockNumber: meta.slot ?? null,
           fee: meta.meta?.fee != null ? String(meta.meta.fee / 1e9) : undefined,
-          status: meta.meta?.err ? 'failed' : 'confirmed',
+          status: solOk ? 'confirmed' : 'failed',
           raw: data,
         };
       }
@@ -362,8 +377,13 @@ export class TatumProvider implements BlockchainProvider {
       if (useKms && !fromAddr && params.derivationIndex == null) {
         throw new Error(`UTXO send under KMS requires a source address or derivation index`);
       }
-      // Tatum requires `fee` + `changeAddress` together or neither — omitting
-      // both lets it auto-fee and return change to the sender address.
+      // Tatum requires `fee` + `changeAddress` together or neither — and
+      // "neither" does NOT mean auto-change: the entire unspent input
+      // becomes miner fee (verified live: a 0.0002 send burned 0.00105).
+      // Always pin both; change returns to the UTXO source.
+      const feeRate = await this.utxoFeeRate(path); // sats/byte
+      const estSize = 148 + 34 * 2 + 10; // 1 input, recipient + change
+      const feeSats = Math.max(Math.ceil(estSize * feeRate), 1000);
       const utxoBody = {
         fromAddress: [
           useKms
@@ -371,6 +391,8 @@ export class TatumProvider implements BlockchainProvider {
             : { address: fromAddr, privateKey: pk },
         ],
         to: [{ address: params.toAddress, value: Number(params.amount) }],
+        fee: String(feeSats / 1e8),
+        changeAddress: fromAddr,
       };
       const { data } = await this.http.post(`/v3/${path}/transaction`, utxoBody);
       return this.sendResult(data, useKms);
@@ -383,6 +405,12 @@ export class TatumProvider implements BlockchainProvider {
       currency: params.asset.code,
       ...signer,
     };
+    // Account-model chains name the sender explicitly (`from` = the address
+    // holding the funds — custody base/treasury under KMS).
+    if (params.asset.chain === 'SOL' || params.asset.chain === 'TRON') {
+      body.from = params.sourceAddress;
+      delete body.currency; // rejected by the SOL/TRON transaction schemas
+    }
     if (isEvm) {
       const fee = await this.estimateEvmFee(path, params);
       if (fee) body.fee = fee;
@@ -397,10 +425,25 @@ export class TatumProvider implements BlockchainProvider {
    * the txid arrives later via /v3/kms/{requestId}.
    */
   private sendResult(data: any, useKms: boolean): SendTxResult {
-    const txid = data?.txId ?? data?.txid ?? data?.hash;
+    const txid = TatumProvider.extractTxid(data);
     if (!useKms) return { txid };
     if (txid) return { txid, kmsRequestId: data.id };
     return { kmsRequestId: data?.id ?? data?.signatureId };
+  }
+
+  /**
+   * Tatum returns txids in inconsistent shapes per chain — a plain string
+   * (BTC), a {txId} object, or a stringified object (SOL KMS responses
+   * arrive as "{\"txId\":\"...\"}"). Normalize all of them or the literal
+   * JSON blob gets stored as the transaction's txid.
+   */
+  private static extractTxid(data: any): string | undefined {
+    let v = data?.txId ?? data?.txid ?? data?.hash;
+    if (typeof v === 'string' && v.trim().startsWith('{')) {
+      try { v = JSON.parse(v); } catch { /* keep as-is */ }
+    }
+    if (v && typeof v === 'object') v = v.txId ?? v.txid ?? v.hash;
+    return typeof v === 'string' && v ? v : undefined;
   }
 
   /** KMS pending-request status — the sweeper resolves txids through this. */
@@ -408,7 +451,7 @@ export class TatumProvider implements BlockchainProvider {
     try {
       const { data } = await this.http.get(`/v3/kms/${requestId}`);
       const s = String(data?.status ?? '').toUpperCase();
-      const txid = data?.txId ?? data?.txid;
+      const txid = TatumProvider.extractTxid(data);
       if (txid || s === 'COMPLETED' || s === 'SUCCESS') {
         return { status: 'signed', txid };
       }
@@ -419,6 +462,21 @@ export class TatumProvider implements BlockchainProvider {
     } catch (err: any) {
       if (err.response?.status === 404) return null;
       throw err;
+    }
+  }
+
+  /**
+   * UTXO fee rate in sats/byte — Tatum's fee endpoint returns per-byte
+   * recommendations; floor at 1 to never dust-fee a real send, and a
+   * conservative 10 fallback if the endpoint is unreachable.
+   */
+  private async utxoFeeRate(path: string): Promise<number> {
+    try {
+      const { data } = await this.http.get(`/v3/blockchain/fee/${path}`);
+      const rate = Number(data?.medium ?? data?.fast ?? data?.slow ?? 0);
+      return rate > 0 ? rate : 10;
+    } catch {
+      return 10;
     }
   }
 

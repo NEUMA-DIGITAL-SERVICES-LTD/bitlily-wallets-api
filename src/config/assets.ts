@@ -23,6 +23,10 @@ export interface AssetDef {
    *  deployment should fail loudly rather than query a nonexistent
    *  contract and return phantom zero balances. */
   testnetContract?: string;
+  /** Registered but excluded from enabledAssets() unless explicitly named
+   *  in ENABLED_ASSETS — for assets the current provider cannot serve
+   *  honestly. The registry keeps them as the scope record. */
+  disabledByDefault?: boolean;
 }
 
 export const ASSET_REGISTRY: AssetDef[] = [
@@ -45,12 +49,25 @@ export const ASSET_REGISTRY: AssetDef[] = [
     // Official Circle testnet USDC on Sepolia (faucet.circle.com).
     testnetContract: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238' },
   { code: 'USDC_MATIC', chain: 'POLYGON', type: 'token', decimals: 6, contract: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359' },
-  { code: 'USDC_SOL', chain: 'SOL', type: 'token', decimals: 6, contract: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' },
+  // Tatum v3 exposes no SPL-token endpoints (balances, sends) — this
+  // asset is unservable through the current provider. Kept registered as
+  // the scope record; enabled only if explicitly listed in ENABLED_ASSETS
+  // after an SPL-capable provider is wired.
+  { code: 'USDC_SOL', chain: 'SOL', type: 'token', decimals: 6, contract: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    disabledByDefault: true },
 ];
 
 export function getAsset(code: string): AssetDef | undefined {
   const a = ASSET_REGISTRY.find((a) => a.code === code.toUpperCase());
   if (!a) return undefined;
+  // Provider-unservable assets answer as unsupported unless the operator
+  // explicitly enabled them — a withdrawal must not pass validation only
+  // to fail after the ledger debit.
+  if (a.disabledByDefault) {
+    const only = (process.env.ENABLED_ASSETS ?? '')
+      .split(',').map((s) => s.trim().toUpperCase());
+    if (!only.includes(a.code)) return undefined;
+  }
   if (a.type === 'token' && (process.env.TATUM_NETWORK ?? 'testnet') !== 'mainnet') {
     return { ...a, contract: a.testnetContract };
   }
@@ -62,5 +79,8 @@ export function enabledAssets(): AssetDef[] {
     .split(',')
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
-  return only.length ? ASSET_REGISTRY.filter((a) => only.includes(a.code)) : ASSET_REGISTRY;
+  if (only.length) return ASSET_REGISTRY.filter((a) => only.includes(a.code));
+  // Default set excludes assets the provider cannot serve; explicit
+  // ENABLED_ASSETS membership overrides.
+  return ASSET_REGISTRY.filter((a) => !a.disabledByDefault);
 }

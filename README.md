@@ -96,12 +96,22 @@ broadcast/debited/confirmed (sends) — not just code review.
 
 | Asset | Testnet | Deposit | Send | Notes |
 |---|---|---|---|---|
-| BTC | testnet3 | ✅ 2/2 confs | ✅ broadcast (env-key) | KMS UTXO path wired, not yet fired live |
+| BTC | testnet3 | ✅ 2/2 confs | ✅ **KMS-signed** | fee+change pinned after live fee-burn bug |
 | ETH | Sepolia | ✅ | ✅ env-key + **KMS-signed** | full custody loop proven |
-| SOL | devnet | ✅ | ❌ untested | single-address custody (no xpub) |
+| SOL | devnet | ✅ | ✅ **KMS-signed** | single-address custody; confs = finalized-at-index (see caveat) |
 | USDC_ETH | Sepolia | ✅ | ✅ | official Circle testnet USDC |
 | USDT_ETH | Sepolia | ✅ | ✅ | self-deployed mock — no canonical Sepolia USDT |
 | LTC / POLYGON / TRON + tokens | — | ❌ registered only | ❌ | registry entries, zero live validation |
+
+**Known provider gaps (Tatum v3 surface limits):**
+- `USDC_SOL` — Tatum exposes no SPL-token balance endpoint, so SPL
+  deposits/withdrawals are **not monitorable** through this provider.
+  `getAddressBalance` throws loudly rather than silently returning 0.
+  Resolution requires a Solana-RPC-capable provider behind
+  `BlockchainProvider` before that asset can be enabled honestly.
+- SOL confirmations — Tatum has no SOL block-height endpoint; indexed
+  txs are reported as finalized (32 confs). Deep-reorg detection on
+  Solana is not implemented.
 
 ### Custody status
 
