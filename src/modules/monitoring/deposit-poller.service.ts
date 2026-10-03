@@ -147,7 +147,17 @@ export class DepositPollerService {
         if (existing) {
           existing.confirmations = reportConfs;
           existing.blockNumber = hit?.blockNumber ?? existing.blockNumber;
-          if (confirmed && existing.status !== 'confirmed') {
+          if (existing.status === 'confirmed') {
+            // Already credited — sync the marker or this delta re-detects
+            // every poll forever (seen live: reactivated row whose tx had
+            // confirmed while retired).
+            if (parseFloat(fresh.creditedAmount) < parseFloat(observed)) {
+              fresh.creditedAmount = observed;
+              await m.save(fresh);
+            }
+            return m.save(existing);
+          }
+          if (confirmed) {
             existing.status = 'confirmed';
             // Credit only THIS tx's recorded amount; a newer uncredited
             // remainder re-detects on the next poll under a fresh txid.

@@ -117,13 +117,16 @@ export class TransactionsService {
     try {
       // Custody model: withdrawals spend from the chain treasury (index 0) —
       // sweeps converge deposit funds there. UTXO chains need the treasury
-      // address named explicitly as the UTXO source.
+      // address named explicitly as the UTXO source. The signatureId lives
+      // on the chain-level custody account — the wallet account's copy is
+      // only a creation-time snapshot and is NULL for wallets enrolled
+      // before custody existed; those must still withdraw.
       const custody = await this.dataSource.getRepository(CustodyAccount)
         .findOne({ where: { chain: asset.chain } });
       const result = await this.provider.sendTransaction({
         asset,
         fromAccountId: account.id,
-        signatureId: account.secretRef,
+        signatureId: custody?.secretRef ?? account.secretRef,
         derivationIndex: custody?.xpub ? 0 : undefined,
         sourceAddress: custody?.treasuryAddress ?? undefined,
         toAddress: tx.address,

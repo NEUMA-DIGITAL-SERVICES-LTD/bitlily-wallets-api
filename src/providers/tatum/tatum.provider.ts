@@ -29,6 +29,14 @@ const CHAIN_PATH: Record<Chain, string> = {
 const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON'];
 
 /**
+ * Tatum's `currency` field for native sends — its enum doesn't always
+ * match our asset codes (Polygon's is still MATIC, not POL).
+ */
+const TATUM_NATIVE_CURRENCY: Partial<Record<Chain, string>> = {
+  POLYGON: 'MATIC',
+};
+
+/**
  * Convert raw token base units → decimal string using BigInt math.
  * Tatum token endpoints return smallest units ("20000000" = 20 USDC @ 6dp);
  * a value already containing '.' is assumed pre-normalized and passed
@@ -132,6 +140,12 @@ export class TatumProvider implements BlockchainProvider {
       const incoming = parseFloat(data.incoming ?? '0');
       const outgoing = parseFloat(data.outgoing ?? '0');
       return String(incoming - outgoing);
+    }
+    if (asset.chain === 'TRON') {
+      // TRON's native balance lives on the account object (sun units),
+      // not the /account/balance path — that route 404s.
+      const { data } = await this.http.get(`/v3/tron/account/${address}`);
+      return String(Number(data.balance ?? 0) / 1e6);
     }
     const { data } = await this.http.get(`/v3/${path}/account/balance/${address}`);
     return String(data.balance ?? data ?? '0');
@@ -401,8 +415,10 @@ export class TatumProvider implements BlockchainProvider {
     const body: Record<string, unknown> = {
       to: params.toAddress,
       amount: params.amount,
-      // Tatum's send schema requires currency — the chain's native symbol.
-      currency: params.asset.code,
+      // Tatum's send schema requires currency — the chain's NATIVE symbol
+      // as Tatum names it, which is not always our asset code
+      // (POL → MATIC). Verified live: 'POL' is rejected by the schema.
+      currency: TATUM_NATIVE_CURRENCY[params.asset.chain] ?? params.asset.code,
       ...signer,
     };
     // Account-model chains name the sender explicitly (`from` = the address
