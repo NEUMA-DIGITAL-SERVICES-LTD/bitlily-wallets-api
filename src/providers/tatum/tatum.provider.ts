@@ -130,13 +130,13 @@ export class TatumProvider implements BlockchainProvider {
         return hit ? fromRaw(String(hit[asset.contract ?? '']), asset.decimals) : '0';
       }
       if (asset.chain === 'SOL') {
-        // Tatum v3 has no SPL-token balance endpoint — SOL token deposits
-        // cannot be monitored through this provider. Fail loudly rather
-        // than 404-spam every poll cycle.
-        throw new Error(
-          `Tatum cannot read SPL balances — ${asset.code} deposits are ` +
-          `unsupported until a Solana-RPC-capable provider is wired`,
+        // SPL balances ride the same unified token route — but unlike EVM
+        // it returns UI units already ("20" = 20 USDC), NOT base units.
+        // Do not run fromRaw here or 20 USDC reads as 0.00002.
+        const { data } = await this.http.get(
+          `/v3/blockchain/token/balance/SOL/${asset.contract}/${address}`,
         );
+        return String(data.balance ?? data ?? '0');
       }
       // Universal token-balance route — takes chain CODES (ETH, MATIC…),
       // not path names. The /v3/{chain}/account/balance/erc20/ variant
@@ -437,6 +437,23 @@ export class TatumProvider implements BlockchainProvider {
 
     // TRC20 sends use Tatum's dedicated trc20 endpoint — posting a token
     // transfer to /v3/tron/transaction would send native TRX instead.
+    // SPL sends ride the unified token endpoint with a SOL-specific body:
+    // {chain, from, to, amount, contractAddress, digits, signatureId}.
+    // Verified live — the schema queued a real KMS request.
+    if (params.asset.chain === 'SOL' && isToken) {
+      const splBody = {
+        chain: 'SOL',
+        from: params.sourceAddress,
+        to: params.toAddress,
+        amount: params.amount,
+        contractAddress: params.asset.contract,
+        digits: params.asset.decimals,
+        ...signer,
+      };
+      const { data } = await this.http.post('/v3/blockchain/token/transaction', splBody);
+      return this.sendResult(data, useKms);
+    }
+
     // KMS signs via signatureId; `from` names the treasury holding the
     // tokens. feeLimit is required by the schema (TRX, not sun).
     if (params.asset.chain === 'TRON' && isToken) {

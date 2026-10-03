@@ -82,11 +82,16 @@ describe('TatumProvider', () => {
   });
 
   describe('Solana balances', () => {
-    it('rejects SPL balance lookups loudly — Tatum cannot read them', async () => {
-      const p = makeProvider({ get: jest.fn() });
-      await expect(p.getAddressBalance('addr', USDC_SOL)).rejects.toThrow(
-        /SPL balances/,
+    it('reads SPL balances via the unified route in UI units — never fromRaw', async () => {
+      const get = jest.fn().mockResolvedValue({ data: { balance: '20' } });
+      const p = makeProvider({ get });
+      const bal = await p.getAddressBalance('treasury', USDC_SOL);
+      expect(get).toHaveBeenCalledWith(
+        `/v3/blockchain/token/balance/SOL/${USDC_SOL.contract}/treasury`,
       );
+      // 20 UI units must NOT become 0.00002 — SOL returns decimals,
+      // unlike the EVM variant which returns raw base units.
+      expect(bal).toBe('20');
     });
   });
 
@@ -161,6 +166,23 @@ describe('TatumProvider', () => {
       expect(body.chain).toBe('MATIC');
       expect(body.contractAddress).toBe(USDC_MATIC.contract);
       expect(body.digits).toBe(6);
+    });
+
+    it('SPL send uses the unified token endpoint with a SOL body', async () => {
+      const post = jest.fn().mockResolvedValue({ data: { id: 'req-1' } });
+      const p = makeProvider({ post });
+      await p.sendTransaction(sendParams(USDC_SOL, { amount: '1' }));
+      const body = post.mock.calls[0][1];
+      expect(post.mock.calls[0][0]).toBe('/v3/blockchain/token/transaction');
+      expect(body).toMatchObject({
+        chain: 'SOL',
+        from: 'treasury-addr',
+        to: 'dest',
+        amount: '1',
+        contractAddress: USDC_SOL.contract,
+        digits: 6,
+        signatureId: 'sig-1',
+      });
     });
 
     it('refuses KMS send without signatureId — no env-key fallback', async () => {

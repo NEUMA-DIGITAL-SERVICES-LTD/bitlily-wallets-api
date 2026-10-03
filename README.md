@@ -107,19 +107,17 @@ broadcast/debited/confirmed (sends) — not just code review.
 | USDT_TRON | Shasta | ✅ | ✅ **KMS-signed** | Shasta test contract `TG3XXy...` |
 | USDC_MATIC | Amoy | ✅ | ✅ **KMS-signed** | real Circle Amoy USDC `0x41E9...7582` |
 | USDT_MATIC | Amoy | — | ⚠️ by-analogy | no Tether testnet deployment exists; same code path as USDC_MATIC |
+| USDC_SOL | devnet | ✅ | ✅ **KMS-signed** | real Circle devnet USDC `4zMMC9...ncDU`; SPL rides unified token routes |
 
 Sweep engine (deposit → treasury consolidation) is **live-proven** on LTC:
 index-1 custody key signed via KMS, four-eye verified, change/fee correct.
 
 **Known provider gaps (Tatum v3 surface limits):**
-- `USDC_SOL` — Tatum exposes no SPL-token balance endpoint, so SPL
-  deposits/withdrawals are **not monitorable** through this provider.
-  `getAddressBalance` throws loudly rather than silently returning 0.
-  Resolution requires a Solana-RPC-capable provider behind
-  `BlockchainProvider` before that asset can be enabled honestly.
 - SOL confirmations — Tatum has no SOL block-height endpoint; indexed
   txs are reported as finalized (32 confs). Deep-reorg detection on
   Solana is not implemented.
+- SPL balances return UI units (not base units like EVM) — the provider
+  must not apply `fromRaw` normalization; regression test pins this.
 
 ### Custody status
 

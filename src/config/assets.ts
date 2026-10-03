@@ -54,12 +54,12 @@ export const ASSET_REGISTRY: AssetDef[] = [
   { code: 'USDC_MATIC', chain: 'POLYGON', type: 'token', decimals: 6, contract: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
     // Circle's official testnet USDC on Amoy (faucet.circle.com).
     testnetContract: '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582' },
-  // Tatum v3 exposes no SPL-token endpoints (balances, sends) — this
-  // asset is unservable through the current provider. Kept registered as
-  // the scope record; enabled only if explicitly listed in ENABLED_ASSETS
-  // after an SPL-capable provider is wired.
+  // SPL tokens are servable via Tatum's unified token routes
+  // (/v3/blockchain/token/{balance,transaction} accept chain=SOL) —
+  // verified live on devnet. Mainnet contract is Circle's USDC mint.
   { code: 'USDC_SOL', chain: 'SOL', type: 'token', decimals: 6, contract: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-    disabledByDefault: true },
+    // Circle's official devnet USDC mint (faucet.circle.com).
+    testnetContract: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' },
 ];
 
 export function getAsset(code: string): AssetDef | undefined {
