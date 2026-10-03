@@ -215,14 +215,17 @@ export class WalletsService {
    * at chain level and increments atomically — safe under concurrency.
    */
   private async allocIndex(em: EntityManager, chain: string): Promise<number> {
+    // Index 0 is RESERVED as the treasury — counters start at 2 so the
+    // first deposit gets index 1. Seeding at 1 meant the first deposit
+    // address derived as the treasury itself (live-caught collision).
     const [row] = await em.query(
-      `INSERT INTO chain_counters (chain, next_index) VALUES ($1, 1)
+      `INSERT INTO chain_counters (chain, next_index) VALUES ($1, 2)
        ON CONFLICT (chain) DO UPDATE
-       SET next_index = chain_counters.next_index + 1
+       SET next_index = GREATEST(chain_counters.next_index + 1, 2)
        RETURNING next_index`,
       [chain],
     );
-    return row.next_index - 1;
+    return Math.max(row.next_index - 1, 1);
   }
 
   /**

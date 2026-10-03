@@ -10,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
+import { Transaction } from '../../database/entities/transaction.entity';
 import { AssetDef, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
@@ -38,6 +39,8 @@ export class SweepService {
     private readonly addresses: Repository<DepositAddress>,
     @InjectRepository(CustodyAccount)
     private readonly custody: Repository<CustodyAccount>,
+    @InjectRepository(Transaction)
+    private readonly txs: Repository<Transaction>,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
     private readonly config: ConfigService,
   ) {}
@@ -108,15 +111,21 @@ export class SweepService {
       }
     }
 
-    record(await this.provider.sendTransaction({
+    const r = await this.provider.sendTransaction({
       asset,
       fromAccountId: dep.account.id,
       signatureId: custody.secretRef,
       derivationIndex: dep.derivationIndex,
+      // UTXO chains need the source address for input selection AND as
+      // changeAddress — omitting it would burn the whole input as fee
+      // (the bug we already fixed once). SOL/TRON need it as `from`.
+      sourceAddress: dep.address,
       toAddress: treasury,
       amount,
       reference: `sweep:${dep.id}`,
-    }));
+    });
+    record(r);
+    await this.recordOutbound(dep, asset, amount, treasury, `sweep:${dep.id}`, r);
     this.logger.log(`Sweep ${dep.address} → ${treasury}: ${amount} ${asset.code}`);
     return { txids, pendingKms };
   }
@@ -132,7 +141,13 @@ export class SweepService {
     custody: CustodyAccount,
     record: (r: { txid?: string; kmsRequestId?: string }) => void,
   ): Promise<boolean> {
-    const nativeAsset = getAsset(token.chain); // e.g. ETH, POLYGON — the chain's native code
+    // getAsset keys on asset CODE not chain name — 'POLYGON' isn't an
+    // asset code (native code is 'POL'), so this lookup must map.
+    const NATIVE_CODE: Record<string, string> = {
+      ETH: 'ETH', POLYGON: 'POL', TRON: 'TRX', SOL: 'SOL',
+      BTC: 'BTC', LTC: 'LTC',
+    };
+    const nativeAsset = getAsset(NATIVE_CODE[token.chain] ?? token.chain);
     if (!nativeAsset) throw new BadRequestException(`No native asset for ${token.chain}`);
     const nativeBal = parseFloat(
       await this.provider.getAddressBalance(dep.address, nativeAsset),
@@ -142,7 +157,7 @@ export class SweepService {
     const needed = this.config.get<number>('sweep.gasTopUp') ?? 0.005;
     if (nativeBal >= needed) return false;
     const topUp = (needed - nativeBal).toFixed(8);
-    record(await this.provider.sendTransaction({
+    const r = await this.provider.sendTransaction({
       asset: nativeAsset,
       fromAccountId: dep.account.id,
       signatureId: custody.secretRef,
@@ -150,8 +165,42 @@ export class SweepService {
       toAddress: dep.address,
       amount: topUp,
       reference: `gas-pump:${dep.id}`,
-    }));
+    });
+    record(r);
+    await this.recordOutbound(dep, nativeAsset, topUp, dep.address, `gas-pump:${dep.id}`, r);
     this.logger.log(`Gas-pumped ${topUp} ${nativeAsset.code} → ${dep.address}`);
     return true;
+  }
+
+  /**
+   * Persist the sweep send as a pending outbound Transaction — the KMS
+   * four-eye verify endpoint only authorizes requests matching a row WE
+   * created (raw.kmsRequestId). Without this the daemon refuses to sign
+   * sweeps (verified live). No ledger entry: funds stay in custody.
+   * Also lets the outbound sweeper resolve+track confirmations for free.
+   */
+  private async recordOutbound(
+    dep: DepositAddress,
+    asset: AssetDef,
+    amount: string,
+    toAddress: string,
+    reference: string,
+    r: { txid?: string; kmsRequestId?: string },
+  ): Promise<void> {
+    await this.txs.save(
+      this.txs.create({
+        wallet: dep.account.wallet,
+        direction: 'outbound',
+        chain: dep.chain,
+        asset: asset.code,
+        txid: r.txid ?? `pending:${crypto.randomUUID()}`,
+        address: toAddress,
+        amount,
+        status: 'pending',
+        confirmations: 0,
+        reference,
+        raw: { kmsRequestId: r.kmsRequestId, internal: 'sweep' },
+      }),
+    );
   }
 }

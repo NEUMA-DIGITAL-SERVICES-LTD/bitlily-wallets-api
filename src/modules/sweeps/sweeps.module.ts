@@ -1,10 +1,12 @@
-import { Body, Controller, Module, Post } from '@nestjs/common';
+import { Body, Controller, Module, Post, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { IsNotEmpty, IsUUID } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
+import { Transaction } from '../../database/entities/transaction.entity';
+import { AdminKeyGuard } from '../../common/admin-key.guard';
 import { SweepService } from './sweep.service';
 
 class SweepDto {
@@ -16,6 +18,7 @@ class SweepDto {
 
 @ApiTags('admin')
 @ApiSecurity('x-api-key')
+@UseGuards(AdminKeyGuard)
 @Controller('api/v1/admin')
 export class SweepController {
   constructor(private readonly sweeps: SweepService) {}
@@ -32,7 +35,7 @@ export class SweepController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([DepositAddress, CustodyAccount])],
+  imports: [TypeOrmModule.forFeature([DepositAddress, CustodyAccount, Transaction])],
   controllers: [SweepController],
   providers: [SweepService],
 })

@@ -325,9 +325,17 @@ export class TatumProvider implements BlockchainProvider {
       });
       return { asset: asset.code, fee: String(data.gasFee ?? data.fee ?? data) };
     } catch {
-      // Fall back to a plain network-fee lookup for chains without estimation.
-      const { data } = await this.http.get(`/v3/blockchain/fee/${path}`).catch(() => ({ data: null }));
-      return { asset: asset.code, fee: String(data?.fast ?? data?.medium ?? '0'), speed: 'medium' };
+      // Fall back to a plain network-fee lookup. This endpoint takes the
+      // chain CODE (enum: ETH|BTC|LTC|DOGE), not the URL path — passing
+      // 'litecoin' 400s, which silently zeroed fee estimates. UTXO chains
+      // return sats/byte — convert to coin units over a ~226-byte tx or
+      // callers subtract "10" as if it were a whole-coin fee.
+      const { data } = await this.http.get(`/v3/blockchain/fee/${asset.chain}`).catch(() => ({ data: null }));
+      const rate = Number(data?.fast ?? data?.medium ?? 0);
+      const fee = (asset.chain === 'BTC' || asset.chain === 'LTC')
+        ? String((rate * 226) / 1e8)
+        : String(rate || '0');
+      return { asset: asset.code, fee, speed: 'medium' };
     }
   }
 
@@ -397,7 +405,7 @@ export class TatumProvider implements BlockchainProvider {
       // "neither" does NOT mean auto-change: the entire unspent input
       // becomes miner fee (verified live: a 0.0002 send burned 0.00105).
       // Always pin both; change returns to the UTXO source.
-      const feeRate = await this.utxoFeeRate(path); // sats/byte
+      const feeRate = await this.utxoFeeRate(params.asset.chain); // sats/byte
       const estSize = 148 + 34 * 2 + 10; // 1 input, recipient + change
       const feeSats = Math.max(Math.ceil(estSize * feeRate), 1000);
       const utxoBody = {
@@ -505,9 +513,10 @@ export class TatumProvider implements BlockchainProvider {
    * recommendations; floor at 1 to never dust-fee a real send, and a
    * conservative 10 fallback if the endpoint is unreachable.
    */
-  private async utxoFeeRate(path: string): Promise<number> {
+  private async utxoFeeRate(chain: string): Promise<number> {
     try {
-      const { data } = await this.http.get(`/v3/blockchain/fee/${path}`);
+      // Endpoint takes chain code (BTC|LTC|DOGE|ETH), not path name.
+      const { data } = await this.http.get(`/v3/blockchain/fee/${chain}`);
       const rate = Number(data?.medium ?? data?.fast ?? data?.slow ?? 0);
       return rate > 0 ? rate : 10;
     } catch {
