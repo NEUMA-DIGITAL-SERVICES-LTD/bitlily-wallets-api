@@ -13,6 +13,13 @@ const USDC_SOL: AssetDef = {
   code: 'USDC_SOL', chain: 'SOL', type: 'token', decimals: 6,
   contract: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
 } as AssetDef;
+const TRX_ASSET: AssetDef = {
+  code: 'TRX', chain: 'TRON', type: 'native', decimals: 6,
+} as AssetDef;
+const USDT_TRON: AssetDef = {
+  code: 'USDT_TRON', chain: 'TRON', type: 'token', decimals: 6,
+  contract: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
+} as AssetDef;
 
 function makeProvider(http: any, useKms = true) {
   jest.spyOn(axios, 'create').mockReturnValue({
@@ -92,6 +99,53 @@ describe('TatumProvider', () => {
       // 20 UI units must NOT become 0.00002 — SOL returns decimals,
       // unlike the EVM variant which returns raw base units.
       expect(bal).toBe('20');
+    });
+  });
+
+  describe('Tron transaction normalization', () => {
+    // Real shape returned by /v3/tron/transaction for a native send —
+    // camelCase `rawData` (NOT `raw_data`), hex to_address + base58 fields.
+    const tronNativeTx = {
+      ret: [{ contractRet: 'SUCCESS' }],
+      blockNumber: 68932899,
+      rawData: {
+        contract: [{
+          type: 'TransferContract',
+          parameter: {
+            value: {
+              owner_address: '410a4f01a059116134759cda43005b9e1573a82fa5',
+              to_address: '4133f5877e95d90dfa374a672171add008c0f5a85c',
+              amount: 5000000,
+              ownerAddressBase58: 'TAuiQSBQWLRqEMW95W5aXZJZgAqBqYJD5U',
+              toAddressBase58: 'TEhwbWrJqDYKKfRyWDgf86SPBBTJ9KbBEb',
+            },
+          },
+        }],
+      },
+    };
+
+    it('reads camelCase rawData and prefers *Base58 output fields', async () => {
+      const get = jest.fn().mockResolvedValue({ data: tronNativeTx });
+      const p = makeProvider({ get });
+      const tx = await p.getTransaction('txid', 'TRON', TRX_ASSET);
+      expect(tx?.outputs).toEqual([
+        { address: 'TEhwbWrJqDYKKfRyWDgf86SPBBTJ9KbBEb', amount: '5' },
+      ]);
+      expect(tx?.status).toBe('confirmed');
+    });
+
+    it('token-scoped query on a native transfer yields NO outputs — a token watch row must not verify a TRX send', async () => {
+      const get = jest.fn().mockResolvedValue({ data: tronNativeTx });
+      const p = makeProvider({ get });
+      const tx = await p.getTransaction('txid', 'TRON', USDT_TRON);
+      expect(tx?.outputs).toEqual([]);
+    });
+
+    it('getLatestBlock uses /v3/tron/info — /current/block is a 404', async () => {
+      const get = jest.fn().mockResolvedValue({ data: { blockNumber: 68932984 } });
+      const p = makeProvider({ get });
+      expect(await p.getLatestBlock('TRON')).toBe(68932984);
+      expect(get).toHaveBeenCalledWith('/v3/tron/info');
     });
   });
 

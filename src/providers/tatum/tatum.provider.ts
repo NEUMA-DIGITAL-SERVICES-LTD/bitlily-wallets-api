@@ -219,8 +219,9 @@ export class TatumProvider implements BlockchainProvider {
         return 0;
       }
       case 'TRON': {
-        const { data } = await this.http.get(`/v3/${path}/current/block`);
-        return Number(data.block_header?.raw_data?.number ?? data.blockNumber ?? 0);
+        // /v3/tron/current/block 404s — /v3/tron/info returns {blockNumber}.
+        const { data } = await this.http.get(`/v3/${path}/info`);
+        return Number(data.blockNumber ?? data.block_header?.raw_data?.number ?? 0);
       }
       default: {
         // EVM: block/current returns the latest block number
@@ -304,27 +305,38 @@ export class TatumProvider implements BlockchainProvider {
         };
       }
       case 'TRON': {
-        // `?? {}` made the old ternary always-truthy — the unsafe branch
-        // then dereferenced raw_data.contract on txs that lack raw_data.
-        const contracts = data.raw_data?.contract ?? [];
+        // Tatum returns `rawData` (camelCase); `raw_data` kept as a fallback
+        // for responses shaped closer to raw TronGrid.
+        const contracts =
+          data.raw_data?.contract ?? data.rawData?.contract ?? [];
         const v = contracts[0]?.parameter?.value;
         let outs: { address: string; amount: string }[] = [];
-        if (asset?.type === 'token' && v?.data) {
+        if (asset?.type === 'token') {
           // TRC20 sends are TriggerSmartContract calls: to_address is the
           // CONTRACT, and the recipient/amount live in the ABI `data`
           // (a9059cbb + 32-byte addr + 32-byte amount, tron-hex = 41+20b).
-          const call = String(v.data).replace(/^0x/, '');
-          if (call.startsWith('a9059cbb') && call.length >= 136) {
-            const toHex = call.slice(8 + 24, 8 + 64); // last 20B of the to-word
-            const amount = BigInt('0x' + call.slice(72, 136));
-            const to = tronBase58(toHex);
-            outs = to
-              ? [{ address: to, amount: fromRaw(amount.toString(), asset.decimals) }]
-              : [];
+          // A token-scoped query must NOT fall back to native outputs —
+          // otherwise a token watch row "verifies" a plain TRX transfer.
+          if (v?.data) {
+            const call = String(v.data).replace(/^0x/, '');
+            if (call.startsWith('a9059cbb') && call.length >= 136) {
+              const toHex = call.slice(8 + 24, 8 + 64); // last 20B of the to-word
+              const amount = BigInt('0x' + call.slice(72, 136));
+              const to = tronBase58(toHex);
+              outs = to
+                ? [{ address: to, amount: fromRaw(amount.toString(), asset.decimals) }]
+                : [];
+            }
           }
         } else if (v) {
+          // to_address is tron-hex (41…); Tatum also emits *Base58 fields.
+          // Outputs must be base58 to match watched deposit addresses.
+          const to =
+            v.toAddressBase58 ??
+            tronBase58(String(v.to_address ?? v.contract_address ?? '')) ??
+            '';
           outs = [{
-            address: v.to_address ?? v.contract_address ?? '',
+            address: to,
             amount: String((v.amount ?? 0) / 1e6),
           }];
         }

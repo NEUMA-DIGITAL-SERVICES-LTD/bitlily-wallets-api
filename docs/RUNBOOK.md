@@ -105,12 +105,54 @@ endpoint quiet.
   `Getting pending transaction from <CHAIN>`.
 - Restart: `docker restart bitlily-kms`. Pending requests resume —
   KMS requests don't expire quickly and re-verify each cycle.
-- **`wallet.dat` loss is unrecoverable** — backups are a checklist item;
-  without it all custody keys are gone. This is THE catastrophic
-  scenario; treat host storage accordingly.
+- **`wallet.dat` loss is unrecoverable** — without it all custody keys
+  are gone. This is THE catastrophic scenario.
 - A request getting refused every cycle with "Transaction not found on
   external system" = correct four-eye behavior for requests this
   service didn't originate (or whose tx row is already terminal).
+
+### wallet.dat backup/restore — VERIFIED DRILL (2026-10-04)
+
+The file lives at `/home/node/.tatumrc/wallet.dat` inside the container,
+bind-mounted from the host. Backup + restore was proven end-to-end:
+
+```bash
+# 1. Backup (SHA256-checksum the copy — never edit the original)
+cp ~/.tatumrc/wallet.dat /backup/wallet.dat.$(date +%F)
+sha256sum ~/.tatumrc/wallet.dat /backup/wallet.dat.$(date +%F)
+
+# 2. Prove the restore WITHOUT touching prod — second container,
+#    same env, dead --externalUrl so it loads wallets but can't sign:
+docker run -d --name kms-restore-test \
+  -e TATUM_API_KEY=... -e TATUM_KMS_PASSWORD=... \
+  -v /restore-dir:/home/node/.tatumrc \
+  tatumio/tatum-kms daemon \
+    --externalUrl=http://127.0.0.1:9/never \
+    --chain=BTC,LTC,ETH,MATIC,TRON,SOL --period=10
+
+# 3. PASS = logs show the SAME signatureIds as prod:
+docker logs kms-restore-test | grep "for wallets"
+docker rm -f kms-restore-test
+```
+
+Observed: a fresh container booted the backup and polled all six
+signatureIds identical to production. **Two secrets are required to
+restore: the file AND TATUM_KMS_PASSWORD — back up both, separately,
+encrypted.** Either alone is useless; both together are total custody.
+
+### Treasury gas starvation — seen live 2026-10-04
+
+KMS signed a POL send that then failed broadcast:
+`insufficient funds for gas * price + value`. The wallet ledger said
+POL balance 0.05 while the on-chain treasury had 0.0073 — gas spend
+isn't a ledger event, so treasury native balance drifts BELOW ledger
+total. On mainnet this wedges every EVM send until refilled.
+
+- Check: `GET /v3/{chain}/address/balance/{treasury}` vs the sum of
+  ledger balances + expected gas buffer.
+- Production control needed: treasury gas-floor alert (reconciler
+  should compare custodied-vs-onchain native balance, not just tokens).
+- Testnet: refill from the Amoy/Sepolia faucets.
 
 ## 5. Sweep failures
 

@@ -95,9 +95,16 @@ A full-codebase audit found 22 issues. Status after the fix pass:
    leaks "does request X exist" (existence oracle only, no signing
    influence). Rate-limit at the edge in prod.
 6. **Single-point signing**: KMS host is a SPOF for withdrawals and a
-   catastrophic-loss point if `wallet.dat` is lost. Backup drill is a
-   checklist item, not yet performed.
+   catastrophic-loss point if `wallet.dat` is lost. **Backup/restore
+   drill performed 2026-10-04** — fresh container + copied file +
+   `TATUM_KMS_PASSWORD` loaded all six signatureIds identical to prod
+   (procedure in RUNBOOK §4). Both the file AND the password must be
+   backed up; either alone is useless, together is total custody.
 7. **USDT_MATIC** — verified by-analogy only (see below).
+8. **Treasury gas starvation is possible.** Observed live: POL treasury
+   at 0.0073 while ledger showed 0.05 — gas spend isn't a ledger event.
+   A gas-starved treasury wedges all EVM sends at broadcast (KMS signs,
+   chain refuses). Needs a gas-floor alert on mainnet; see RUNBOOK §4.
 
 ## Live-verified coverage (testnet, as of 2026-10-03)
 
@@ -130,14 +137,36 @@ residual blind spots:
 6. Sweep controller missing admin guard (privilege hole)
 7. TRON balance path 404; Shasta≠Nile testnet confusion
 8. KMS txid returned as stringified JSON (stored literally as txid)
+9. TRON tx payload is `rawData` (camelCase) not `raw_data` — every TRON
+   normalize produced zero outputs → real webhook deposits rejected as
+   spoofed (found by first live Tatum delivery)
+10. TRON token-scoped normalize fell back to native outputs — a
+    USDT_TRON watch row "verified" a plain TRX send and created a
+    phantom token deposit (misattribution caught before it credited;
+    row rejected, event replayed correctly)
+11. `/v3/tron/current/block` 404s — chain height comes from
+    `/v3/tron/info` (`blockNumber`)
+
+## Mainnet contract audit — done 2026-10-04
+
+All six token `contract`+`decimals` entries verified against issuer
+registries, not explorers: Circle (developers.circle.com) for
+USDC_ETH/MATIC/SOL, tether.to supported-protocols for USDT_TRON/ETH,
+polygon.technology mapped-tokens for USDT_MATIC. USDC_MATIC is the
+**native** issuance (`0x3c49…3359`), not bridged USDC.e. All six
+correct; decimals all 6.
 
 ## What still needs external validation
 
 - [ ] Production `WITHDRAWAL_LIMITS`/`APPROVAL_ABOVE` values (config,
       currently test-tuned)
-- [ ] `TATUM_WEBHOOK_HMAC_SECRET` production value + one live Tatum
-      delivery to confirm end-to-end signature compatibility
-- [ ] KMS `wallet.dat` backup/restore drill
+- [x] ~~one live Tatum delivery~~ — done 2026-10-04 via ngrok tunnel:
+      two real `ADDRESS_EVENT` deliveries verified `x-payload-hash`,
+      output-matched, credited; also surfaced bugs #9–11 above
+- [x] ~~KMS `wallet.dat` backup/restore drill~~ — done 2026-10-04
+      (RUNBOOK §4); production secret storage still ops-owned
+- [ ] `TATUM_WEBHOOK_HMAC_SECRET` production value (test value in use)
+- [ ] Treasury gas-floor alerting (see limitation #8)
 - [ ] Rate-limit tuning under real load (defaults are conservative)
 - [ ] Tatum plan/rate-tier — credits burn under polling load at scale
 - [ ] A second reviewer on `deposit-poller` delta/reorg accounting —
