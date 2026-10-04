@@ -384,40 +384,69 @@ export class TatumProvider implements BlockchainProvider {
     await this.http.put('/v3/subscription', { hmacSecret });
   }
 
-  async estimateFee(asset: AssetDef, toAddress: string, amount: string): Promise<FeeEstimate> {
+  /**
+   * Fee estimation per chain family — each strategy is the one Tatum
+   * actually exposes for that chain (verified against the API reference,
+   * not assumed):
+   *  - UTXO (BTC/LTC): POST /v3/blockchain/estimate — concrete-tx estimate,
+   *    needs the sender to count inputs. Returns coin-unit fees per tier.
+   *  - EVM (ETH/POLYGON): POST /v3/{chain}/gas — gasLimit × gasPrice(wei).
+   *  - SOL: no fee endpoint exists — 5000 lamports/signature is a protocol
+   *    constant, not an estimate.
+   *  - TRON: no fee endpoint exists — plain transfers burn ~0.3 TRX when
+   *    free bandwidth runs out; 1 TRX is a conservative reserve.
+   * The previous single-path call hit a 404 ('/v3/blockchain/estimation'
+   * does not exist) and silently fell back for EVERY chain.
+   */
+  async estimateFee(
+    asset: AssetDef,
+    toAddress: string,
+    amount: string,
+    fromAddress?: string,
+  ): Promise<FeeEstimate> {
     const path = CHAIN_PATH[asset.chain];
-    try {
-      const { data } = await this.http.post(`/v3/blockchain/estimation`, {
-        chain: TATUM_CHAIN_CODE[asset.chain] ?? asset.chain,
-        type: 'TRANSFER',
-        fromAddress: undefined,
+    if (asset.chain === 'BTC' || asset.chain === 'LTC') {
+      if (fromAddress) {
+        const { data } = await this.http.post('/v3/blockchain/estimate', {
+          chain: asset.chain,
+          type: 'TRANSFER',
+          fromAddress: [fromAddress],
+          to: [{ address: toAddress, value: Number(amount) }],
+        });
+        const fee = String(data?.medium ?? data?.fast ?? data?.slow ?? '0');
+        if (parseFloat(fee) > 0) {
+          return { asset: asset.code, fee, speed: 'medium' };
+        }
+      }
+      // No source address (or estimate failed) — rate × typical tx size.
+      const rate = await this.utxoFeeRate(asset.chain);
+      return { asset: asset.code, fee: String((rate * 226) / 1e8), speed: 'medium' };
+    }
+    if (asset.chain === 'ETH' || asset.chain === 'POLYGON') {
+      const { data } = await this.http.post(`/v3/${path}/gas`, {
+        from: fromAddress ?? '0x000000000000000000000000000000000000dEaD',
         to: toAddress,
         amount,
       });
-      return { asset: asset.code, fee: String(data.gasFee ?? data.fee ?? data) };
-    } catch {
-      // Fall back to a plain network-fee lookup. This endpoint takes the
-      // chain CODE (enum: ETH|BTC|LTC|DOGE), not the URL path — passing
-      // 'litecoin' 400s, which silently zeroed fee estimates. UTXO chains
-      // return sats/byte — convert to coin units over a ~226-byte tx or
-      // callers subtract "10" as if it were a whole-coin fee.
-      const { data } = await this.http.get(
-        `/v3/blockchain/fee/${TATUM_CHAIN_CODE[asset.chain] ?? asset.chain}`,
-      ).catch(() => ({ data: null }));
-      const rate = Number(data?.fast ?? data?.medium ?? 0);
-      const fee = (asset.chain === 'BTC' || asset.chain === 'LTC')
-        ? String((rate * 226) / 1e8)
-        : String(rate || '0');
-      // A zero fee here means "unknown", not "free" — callers subtract it
-      // from sweep amounts, so silence produces full-balance sends that
-      // fail on-chain with insufficient-for-fee. Fail loudly instead.
-      if (!rate || parseFloat(fee) <= 0) {
-        throw new Error(
-          `Fee estimation unavailable for ${asset.code} — refusing to guess`,
-        );
+      const gasPrice = BigInt(String(data?.gasPrice ?? '0'));
+      const gasLimit = BigInt(String(data?.gasLimit ?? '21000'));
+      if (gasPrice <= 0n) {
+        throw new Error(`Fee estimation unavailable for ${asset.code} — refusing to guess`);
       }
-      return { asset: asset.code, fee, speed: 'medium' };
+      return { asset: asset.code, fee: String(Number(gasPrice * gasLimit) / 1e18) };
     }
+    if (asset.chain === 'SOL') {
+      // Protocol constant: 5000 lamports per signature. SPL transfers add
+      // compute budget instructions but the same signature fee.
+      return { asset: asset.code, fee: '0.000005' };
+    }
+    if (asset.chain === 'TRON') {
+      // No REST estimator exists for TRON. TRC20 transfers burn energy —
+      // the send schema caps it at feeLimit anyway; the reserve here only
+      // sizes native sweeps where ~0.3 TRX bandwidth-burn is typical.
+      return { asset: asset.code, fee: asset.type === 'token' ? '15' : '1' };
+    }
+    throw new Error(`No fee strategy for ${asset.chain}`);
   }
 
   async sendTransaction(params: SendTxParams): Promise<SendTxResult> {
@@ -660,17 +689,34 @@ export class TatumProvider implements BlockchainProvider {
     }
   }
 
+  /**
+   * v4 alert chain identifiers are namespaced per network — 'BTC'/'ETH'
+   * are REJECTED (enum is bitcoin-testnet, ethereum-sepolia, polygon-amoy,
+   * …). Legacy codes MATIC/SOL/TRON exist but the namespaced form is
+   * unambiguous, so prefer it.
+   */
+  private static readonly V4_CHAIN: Record<Chain, { mainnet: string; testnet: string }> = {
+    BTC: { mainnet: 'bitcoin-mainnet', testnet: 'bitcoin-testnet' },
+    LTC: { mainnet: 'litecoin-core-mainnet', testnet: 'litecoin-core-testnet' },
+    ETH: { mainnet: 'ethereum-mainnet', testnet: 'ethereum-sepolia' },
+    POLYGON: { mainnet: 'polygon-mainnet', testnet: 'polygon-amoy' },
+    SOL: { mainnet: 'solana-mainnet', testnet: 'solana-devnet' },
+    TRON: { mainnet: 'tron-mainnet', testnet: 'tron-testnet' },
+  };
+
   async createAddressSubscription(address: string, chain: Chain): Promise<SubscriptionResult> {
     const ingressUrl = process.env.WEBHOOK_INGRESS_URL;
     if (!ingressUrl) {
       this.logger.debug('WEBHOOK_INGRESS_URL unset — skipping address subscription');
       return { subscriptionId: '' };
     }
-    const { data } = await this.http.post('/v4/subscription', {
+    // ?type defaults to MAINNET — omitting it creates a mainnet alert on a
+    // testnet key and vice versa (verified live against the enum).
+    const { data } = await this.http.post(`/v4/subscription?type=${this.network}`, {
       type: 'ADDRESS_EVENT',
       attr: {
         address,
-        chain: chain.toUpperCase(),
+        chain: TatumProvider.V4_CHAIN[chain][this.network],
         url: ingressUrl,
       },
     });
@@ -682,17 +728,22 @@ export class TatumProvider implements BlockchainProvider {
    * a direct endpoint. EVM/SOL/TRON return [] (their per-address history
    * needs indexer APIs that cost extra credits); deposit detection on those
    * chains relies on balance deltas, not tx enumeration.
+   * Uses the v4 unified history route — /v3/{chain}/transaction/address is
+   * officially deprecated. v4 returns {hash, blockNumber, outputs[{value,
+   * address}]} — value in base units, same shape normalizeTx already reads.
    */
   async getAddressTransactions(
     address: string,
     asset: AssetDef,
     limit = 10,
   ): Promise<ProviderTx[]> {
-    const path = CHAIN_PATH[asset.chain];
     if (asset.chain !== 'BTC' && asset.chain !== 'LTC') return [];
+    const v4Chain = asset.chain === 'BTC' ? 'bitcoin' : 'litecoin';
     try {
       const { data } = await this.http.get(
-        `/v3/${path}/transaction/address/${address}?pageSize=${limit}`,
+        `/v4/data/blockchains/transaction/history/utxos` +
+          `?chain=${v4Chain}-${this.network}` +
+          `&address=${address}&pageSize=${limit}`,
       );
       const list = Array.isArray(data) ? data : data?.txs ?? [];
       return list.map((t: any) =>

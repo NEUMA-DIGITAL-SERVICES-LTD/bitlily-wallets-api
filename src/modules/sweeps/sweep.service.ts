@@ -113,7 +113,7 @@ export class SweepService {
     // gas is paid by the pump, not the token amount.
     let amount = balance;
     if (asset.type !== 'token') {
-      const est = await this.provider.estimateFee(asset, treasury, balance);
+      const est = await this.provider.estimateFee(asset, treasury, balance, dep.address);
       const fee = parseFloat(est.fee);
       amount = fee > 0 ? (parseFloat(balance) - fee).toFixed(asset.decimals) : balance;
       if (parseFloat(amount) <= 0) {

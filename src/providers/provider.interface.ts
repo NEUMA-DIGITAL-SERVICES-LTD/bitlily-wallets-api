@@ -106,7 +106,17 @@ export interface BlockchainProvider {
   /** Current chain tip — used to compute real confirmation counts. */
   getLatestBlock(chain: Chain): Promise<number>;
 
-  estimateFee(asset: AssetDef, toAddress: string, amount: string): Promise<FeeEstimate>;
+  /**
+   * Network fee for a send. UTXO estimation needs the source address to
+   * count inputs — callers must pass the spending address (deposit
+   * address for sweeps, treasury for withdrawals).
+   */
+  estimateFee(
+    asset: AssetDef,
+    toAddress: string,
+    amount: string,
+    fromAddress?: string,
+  ): Promise<FeeEstimate>;
 
   /** Broadcast a signed withdrawal/send. */
   sendTransaction(params: SendTxParams): Promise<SendTxResult>;

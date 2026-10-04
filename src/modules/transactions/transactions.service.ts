@@ -280,7 +280,16 @@ export class TransactionsService {
   async estimateFee(assetCode: string, toAddress: string, amount: string) {
     const asset = getAsset(assetCode);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
-    return this.provider.estimateFee(asset, toAddress, amount);
+    if (!isPlausibleAddress(asset.chain, toAddress)) {
+      throw new BadRequestException(
+        `${toAddress} is not a valid ${asset.chain} address format`,
+      );
+    }
+    // Withdrawals spend from the chain treasury — UTXO fee estimates need
+    // the real source address to count inputs.
+    const custody = await this.dataSource.getRepository(CustodyAccount)
+      .findOne({ where: { chain: asset.chain } });
+    return this.provider.estimateFee(asset, toAddress, amount, custody?.treasuryAddress);
   }
 
   requiredConfirmations(chain: string): number {
