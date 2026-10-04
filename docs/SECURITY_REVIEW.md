@@ -43,6 +43,35 @@ Bitlily app ──REST──▶ crypto-service ──REST──▶ Tatum v3 ─�
 | KMS host compromise | keys never leave `wallet.dat`; external URL can't be re-aimed without redeploy | — |
 | Insider with admin key sweeps treasury | sweep endpoint is admin-only; KMS still requires its own signing | code |
 
+## Audit findings → fixes (2026-10-04 hardening pass)
+
+A full-codebase audit found 22 issues. Status after the fix pass:
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | No withdrawal idempotency — client retry = double send | **FIXED** — `idempotency_key` (body or `Idempotency-Key` header), partial unique index `(wallet_id, key)`, dupe returns original row, 23505 race handled |
+| 2 | Balance-check TOCTOU — concurrent sends both pass | **FIXED** — wallet row `pessimistic_write` lock inside the DB tx; balance re-read under lock |
+| 3 | Negative amounts passed `@IsNumberString` (proven live: `-5` debited as a credit) | **FIXED** — `^\d+(\.\d{1,18})?$` DTO regex + `>0` service guard + `LedgerService` invariant; live-verified rejected |
+| 4 | UTXO deltas without tx attribution credited at 0-conf | **FIXED** — unattributed UTXO deltas record `pending` only; real txid adoption + confirmation required; spec regression-pinned |
+| 5 | Provider outage treated as reorg → real deposits reversed | **FIXED** — `reverifyRecent` distinguishes transport errors (defer) from positive absence (reverse) |
+| 6 | Reconciler counted pending sweeps as liabilities → false divergence | **FIXED** — sweep-tagged outbound rows excluded |
+| 7 | `/api/v1/ready` returned HTTP 200 with DB down | **FIXED** — 503; live-verified against a stopped DB |
+| 8 | Webhook verify: wrong-asset row match, no TRC20 output decode, SPL outputs keyed to token-account not owner | **FIXED** — multi-asset resolution tries every watched row; TRC20 `TriggerSmartContract` calldata decoded; SPL outputs keyed by `owner` |
+| 9 | `deferred`/`failed` webhook events never retried | **FIXED** — `attempts` column; sweeper reprocesses up to 10× |
+| 10 | Webhook rate limiter mounted on `/webhooks` — never matched | **FIXED** — mounted on `/api/v1/webhooks` |
+| 11 | Custody re-enroll silently rotated signatureId | **FIXED** — `rotate:true` required to replace; refusal message explains the wrong-wallet risk |
+| 12 | API-key compare short-circuited (timing oracle) | **FIXED** — `crypto.timingSafeEqual` |
+| 13 | SOL deposit address 500s forever after TTL retire | **FIXED** — base address reactivates/reuses the retired row |
+| 14 | `.toFixed(8)` hardcoded — dust-truncates 9+ decimal assets | **FIXED** — `asset.decimals` everywhere amounts are formatted |
+| 15 | No global exception filter — raw internals/axios errors leaked | **FIXED** — `HttpExceptionFilter`: uniform `{code,message,requestId}`; non-HTTP throws → `INTERNAL_ERROR` |
+| 16 | `createWallet` all-or-nothing across chains | accepted risk — partial wallets would confuse custody enrollment |
+| 17 | `toAddress` had zero format validation | **FIXED** — per-chain charset/length/prefix gate before debit (live-verified) |
+| 18 | Inconsistent event names (`deposit.confirmed` vs `transaction.broadcast`) | open — renaming breaks consumers; document at webhook-signing integration |
+| 19 | `estimateFee` returned `'0'` on total failure — read as "free" | **FIXED** — throws; fallback endpoint also fixed to use chain code |
+| 20 | Concurrent sweeps on one address could double-send | **FIXED** — pending `sweep:{depId}` row blocks a second sweep |
+| 21 | SOL native sweep: `estimateFee`→`'0'` → full-balance send → on-chain fee failure | **FIXED** — covered by #19 (unknown fee now refuses) |
+| 22 | `AssetParamDto` dead code | trivial — left |
+
 ## Honest limitations (review these first)
 
 1. **Deposit TTL**: watch rows expire after

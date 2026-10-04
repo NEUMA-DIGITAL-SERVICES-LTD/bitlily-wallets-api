@@ -37,6 +37,13 @@ export class LedgerService {
     amount: string,
     direction: 'credit' | 'debit',
   ): Promise<LedgerEntry> {
+    // Defense-in-depth: the ledger only ever moves positive amounts. A
+    // negative 'debit' is a credit — reject it at the boundary rather than
+    // trusting every upstream validator (a past IsNumberString DTO admitted
+    // '-5' and posted a negative debit live).
+    if (!(parseFloat(amount) > 0)) {
+      throw new Error(`Refusing non-positive ledger amount: ${amount} (${kind})`);
+    }
     const existing = await manager.findOne(LedgerEntry, {
       where: { transaction: { id: tx.id }, kind },
     });

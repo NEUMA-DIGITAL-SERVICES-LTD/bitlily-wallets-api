@@ -72,7 +72,8 @@ export class ReconciliationService {
     );
     const [{ inflight }] = await this.em.query(
       `SELECT COALESCE(SUM(amount::numeric), 0) AS inflight
-       FROM transactions WHERE asset = $1 AND direction = 'outbound' AND status IN ('pending','requires_approval')`,
+       FROM transactions WHERE asset = $1 AND direction = 'outbound' AND status IN ('pending','requires_approval')
+       AND COALESCE(raw->>'internal','') <> 'sweep'`,
       [asset.code],
     );
 

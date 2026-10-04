@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/http-exception.filter';
 import { makeRateLimiter } from './common/rate-limit';
 import { requestId } from './common/request-id';
 
@@ -22,9 +23,16 @@ async function bootstrap() {
     new ValidationPipe({ whitelist: true, transform: true }),
   );
 
+  // Uniform error contract: { code, message, requestId }. Non-HTTP throws
+  // are logged internally and reported as INTERNAL_ERROR — stack traces
+  // and provider internals never reach the client.
+  app.useGlobalFilters(new HttpExceptionFilter());
+
   // Webhook ingress is the only unauthenticated write surface — cap it.
+  // (Mounted on the REAL route — '/webhooks' never matched and left the
+  // limiter dead.)
   app.use(
-    '/webhooks',
+    '/api/v1/webhooks',
     makeRateLimiter({
       windowMs: 60_000,
       max: config.get<number>('service.webhookRateLimitPerMinute') ?? 120,

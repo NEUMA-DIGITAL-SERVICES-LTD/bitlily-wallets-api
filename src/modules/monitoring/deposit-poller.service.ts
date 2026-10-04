@@ -9,6 +9,7 @@ import { AssetDef, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
+  ProviderTx,
 } from '../../providers/provider.interface';
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
@@ -100,13 +101,29 @@ export class DepositPollerService {
       // Best-effort txid attribution (UTXO chains expose address history).
       const candidates =
         (await this.provider.getAddressTransactions?.(dep.address, asset, 5)) ?? [];
-      const hit = candidates.find((t) =>
-        t.outputs.some(
-          (o) =>
-            o.address.toLowerCase() === dep.address.toLowerCase() &&
-            Math.abs(parseFloat(o.amount) - delta) < 1e-8,
-        ),
+      const ours = (t: { outputs: { address: string; amount: string }[] }) =>
+        t.outputs.filter(
+          (o) => o.address.toLowerCase() === dep.address.toLowerCase(),
+        );
+      // Prefer an exact delta match; otherwise take any UNRECORDED tx paying
+      // this address — a dedicated deposit address treats every inbound tx
+      // as a deposit. Recorded txids are excluded so an old deposit can never
+      // masquerade as the current delta (misattributed double-credit).
+      const knownTxids = new Set(
+        (await this.txs.find({
+          where: { address: dep.address, asset: asset.code, direction: 'inbound' },
+          select: ['txid'],
+        })).map((r) => r.txid),
       );
+      const hit =
+        candidates.find((t) =>
+          ours(t).some(
+            (o) => Math.abs(parseFloat(o.amount) - delta) < 1e-8,
+          ),
+        ) ??
+        candidates.find(
+          (t) => ours(t).length > 0 && !knownTxids.has(t.txid),
+        );
 
       // Tatum's address-history entries carry blockNumber but NOT a
       // confirmations field — derive from chain tip (same as webhook path).
@@ -117,13 +134,23 @@ export class DepositPollerService {
         } catch { /* stays pending until derivable */ }
       }
 
+      const utxo = dep.chain === 'BTC' || dep.chain === 'LTC';
       const txid = hit?.txid ?? `poll:${dep.address}:${asset.code}:${observed}`;
       const req = this.requiredConfirmations(dep.chain);
-      const confirmed = hit ? hit.confirmations >= req : true;
-      // Balance reads are post-confirmation for account chains; UTXO balance
-      // may include mempool — when we have a real txid we keep the
-      // confirmation policy, without one we credit (documented tradeoff).
+      // UTXO balance reads include the mempool: an unattributed delta
+      // (hit=null) may be a 0-CONF deposit. Crediting it instantly lets a
+      // payer double-spend after we've released funds — record 'pending'
+      // and re-attribute on subsequent polls until a real txid confirms.
+      // Account-model chains' balances are post-confirmation, so hit=null
+      // there is safe (and unavoidable — no address-history endpoint).
+      const confirmed = hit ? hit.confirmations >= req : !utxo;
       const reportConfs = hit?.confirmations ?? (confirmed ? req : 0);
+      // When attributed, credit the tx's outputs to us — NOT the whole
+      // delta. A two-deposit poll window (delta = a+b) must credit each tx
+      // separately; the unattributed remainder re-detects next cycle.
+      const hitAmount = hit
+        ? ours(hit).reduce((s, o) => s + parseFloat(o.amount), 0).toFixed(asset.decimals)
+        : null;
 
       const tx = await this.em.transaction(async (m) => {
         // Lock just this row (no join — FOR UPDATE can't hit nullable
@@ -141,12 +168,27 @@ export class DepositPollerService {
         // direction:'inbound' matters: an outbound send TO our own watched
         // address (self-transfer, consolidation) has the same on-chain txid —
         // without the filter it would swallow this deposit's credit.
-        const existing = await m.findOne(Transaction, {
-          where: { txid, address: dep.address, asset: asset.code, direction: 'inbound' },
-        });
+        const existing =
+          (await m.findOne(Transaction, {
+            where: { txid, address: dep.address, asset: asset.code, direction: 'inbound' },
+          })) ??
+          // Adopt a pending row from an earlier unattributed poll — without
+          // this, a real txid showing up later would create a second row for
+          // the same funds and double-credit on confirm.
+          (await m.findOne(Transaction, {
+            where: { address: dep.address, asset: asset.code, direction: 'inbound', status: 'pending' },
+          }));
         if (existing) {
           existing.confirmations = reportConfs;
           existing.blockNumber = hit?.blockNumber ?? existing.blockNumber;
+          if (hit?.txid && existing.txid !== hit.txid) {
+            existing.txid = hit.txid; // attribution resolved — replace synthetic
+          }
+          if (existing.status === 'pending') {
+            // While unattributed the pending amount tracks the uncredited
+            // delta; once attributed it is the tx's outputs to us.
+            existing.amount = hitAmount ?? freshDelta.toFixed(asset.decimals);
+          }
           if (existing.status === 'confirmed') {
             // Already credited — sync the marker or this delta re-detects
             // every poll forever (seen live: reactivated row whose tx had
@@ -166,7 +208,7 @@ export class DepositPollerService {
               existing.amount, 'credit',
             );
             fresh.creditedAmount =
-              (parseFloat(fresh.creditedAmount) + parseFloat(existing.amount)).toFixed(8);
+              (parseFloat(fresh.creditedAmount) + parseFloat(existing.amount)).toFixed(asset.decimals);
             await m.save(fresh);
           }
           return m.save(existing);
@@ -180,7 +222,7 @@ export class DepositPollerService {
             asset: dep.asset,
             txid,
             address: dep.address,
-            amount: freshDelta.toFixed(8),
+            amount: hitAmount ?? freshDelta.toFixed(asset.decimals),
             status: confirmed ? 'confirmed' : 'pending',
             confirmations: reportConfs,
             requiredConfirmations: req,
@@ -190,11 +232,15 @@ export class DepositPollerService {
           }),
         );
         if (confirmed) {
+          const amt = hitAmount ?? freshDelta.toFixed(asset.decimals);
           await this.ledger.postEntry(
             m, dep.account.wallet, t, 'deposit_confirmed',
-            freshDelta.toFixed(8), 'credit',
+            amt, 'credit',
           );
-          fresh.creditedAmount = observed;
+          // Marker tracks what was credited, not what was observed — an
+          // attributed partial amount leaves the remainder for next poll.
+          fresh.creditedAmount =
+            (parseFloat(fresh.creditedAmount) + parseFloat(amt)).toFixed(asset.decimals);
           await m.save(fresh);
         }
         return t;
@@ -239,9 +285,18 @@ export class DepositPollerService {
       if (!t.txid || t.txid.includes(':')) continue; // synthetic — unverifiable
       if ((t.confirmations ?? 0) >= finality) continue; // past reorg horizon
 
-      let chainTx = await this.provider
-        .getTransaction(t.txid, dep.chain as any, asset as any)
-        .catch(() => null);
+      // Distinguish "vanished" (provider returned null = 404) from
+      // "unreachable" (threw). A provider outage must NOT reverse real
+      // deposits — catch(()=>null) conflated the two and reversed
+      // confirmed credits during network flaps.
+      let chainTx: ProviderTx | null;
+      try {
+        chainTx = await this.provider.getTransaction(
+          t.txid, dep.chain as any, asset as any,
+        );
+      } catch {
+        continue; // unreachable — retry next cycle, keep the credit
+      }
       if (chainTx?.blockNumber != null) {
         try {
           const head = await this.provider.getLatestBlock(dep.chain as any);
@@ -268,7 +323,7 @@ export class DepositPollerService {
         if (fresh) {
           fresh.creditedAmount = Math.max(
             0, parseFloat(fresh.creditedAmount) - parseFloat(t.amount),
-          ).toFixed(8);
+          ).toFixed(asset.decimals);
           await m.save(fresh);
         }
       });

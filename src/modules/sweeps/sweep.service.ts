@@ -81,6 +81,18 @@ export class SweepService {
       throw new BadRequestException(`No ${asset.code} at ${dep.address}`);
     }
 
+    // In-flight guard — two concurrent sweeps would read the same balance
+    // and double-send. A pending outbound row for this deposit is enough
+    // evidence a sweep is already underway.
+    const inFlight = await this.txs.findOne({
+      where: { reference: `sweep:${dep.id}`, status: 'pending' },
+    });
+    if (inFlight) {
+      throw new BadRequestException(
+        `Sweep already in flight for ${dep.address} (tx ${inFlight.id})`,
+      );
+    }
+
     const txids: string[] = [];
     const pendingKms: string[] = [];
     const record = (r: { txid?: string; kmsRequestId?: string }) => {
@@ -103,7 +115,7 @@ export class SweepService {
     if (asset.type !== 'token') {
       const est = await this.provider.estimateFee(asset, treasury, balance);
       const fee = parseFloat(est.fee);
-      amount = fee > 0 ? (parseFloat(balance) - fee).toFixed(8) : balance;
+      amount = fee > 0 ? (parseFloat(balance) - fee).toFixed(asset.decimals) : balance;
       if (parseFloat(amount) <= 0) {
         throw new BadRequestException(
           `Balance ${balance} ${asset.code} does not cover estimated fee ${est.fee}`,
@@ -156,7 +168,7 @@ export class SweepService {
     // native — enough headroom for testnet/mainnet variance; tune per chain.
     const needed = this.config.get<number>('sweep.gasTopUp') ?? 0.005;
     if (nativeBal >= needed) return false;
-    const topUp = (needed - nativeBal).toFixed(8);
+    const topUp = (needed - nativeBal).toFixed(nativeAsset.decimals);
     const r = await this.provider.sendTransaction({
       asset: nativeAsset,
       fromAccountId: dep.account.id,

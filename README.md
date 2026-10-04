@@ -40,6 +40,10 @@ when it's confirmed) and all blockchain I/O. The provider is behind a
 ### Withdrawal flow
 
 `POST /api/v1/transactions` — ledger debit + broadcast recorded atomically.
+Pass `Idempotency-Key` header (or `idempotencyKey` body field): retries
+with the same `(walletId, key)` return the original transaction instead of
+double-sending. **Clients MUST send a key — a timed-out request retried
+without one debits twice.**
 An outbound sweeper (`OutboundStatusService`) re-fetches pending outbound
 txids every ~2 min, derives confirmations from the chain tip, records real
 on-chain fees, and marks them `confirmed`/`failed` — payout status is
@@ -68,8 +72,15 @@ Swagger UI at `/docs`.
 
 ## Reliability & security model
 
-- **Two idempotency gates**: `webhook_events(provider, key)` dedupes
-  deliveries; `transactions(txid, address, asset)` dedupes credits.
+- **Three idempotency gates**: `webhook_events(provider, key)` dedupes
+  deliveries; `transactions(txid, address, asset)` dedupes credits;
+  `transactions(wallet_id, idempotency_key)` dedupes withdrawal retries.
+- **Withdrawal safety**: amounts must be positive decimals; destination
+  addresses pass a per-chain format check before any debit; balance is
+  re-checked under a `pessimistic_write` wallet lock so concurrent sends
+  can't overspend; UTXO deposits without tx attribution stay `pending`
+  until a real txid confirms (no 0-conf credits).
+- **Errors** return `{code, message, requestId}` — internals never leak.
 - **Verify-before-credit**: webhook payloads are never trusted — the tx is
   re-fetched and its outputs checked against the deposit address.
 - **Confirmation thresholds** per chain (`CONFIRMATIONS_*` env); a 2-min cron

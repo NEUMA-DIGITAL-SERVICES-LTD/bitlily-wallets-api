@@ -73,22 +73,56 @@ describe('DepositPollerService', () => {
 
   beforeEach(makePoller);
 
-  it('credits a new deposit on balance delta (no-txid path)', async () => {
+  it('records an unattributed UTXO delta as pending — never credits it (0-conf guard)', async () => {
+    // UTXO balance reads include the mempool: an unattributed delta may be
+    // a 0-conf deposit that a double-spend can still claw back. It must
+    // stay pending until a real txid confirms — this was finding #4 in the
+    // audit (instant credit → withdraw → RBF = stolen funds).
     provider.getAddressBalance.mockResolvedValue('0.5');
     m.findOne.mockImplementation((e: any) =>
       e === DepositAddress ? { ...dep, creditedAmount: '0' } : null);
 
     await service.poll();
 
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.txid).toMatch(/^poll:/); // synthetic until attributed
+    expect(created.status).toBe('pending');
+    expect(created.amount).toBe('0.50000000');
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.pending', expect.anything());
+  });
+
+  it('adopts a pending synthetic row once the real txid shows up, then credits on confirm', async () => {
+    const synth = {
+      id: 'tx1', wallet, txid: 'poll:addr-1:BTC:0.5', address: 'addr-1',
+      asset: 'BTC', amount: '0.50000000', status: 'pending', confirmations: 0,
+    } as unknown as Transaction;
+    provider.getAddressBalance.mockResolvedValue('0.5');
+    provider.getAddressTransactions.mockResolvedValue([{
+      txid: 'realtxid',
+      chain: 'BTC',
+      outputs: [{ address: 'addr-1', amount: '0.5' }],
+      confirmations: 0,
+      blockNumber: 100,
+    }]);
+    provider.getLatestBlock.mockResolvedValue(104); // → 5 confs ≥ required 2
+    m.findOne.mockImplementation((e: any, o: any) => {
+      if (e === DepositAddress) return { ...dep, creditedAmount: '0' };
+      if (e === Transaction) {
+        // First lookup: exact txid match fails; the pending-adoption
+        // fallback finds the synthetic row.
+        return o?.where?.txid === 'realtxid' ? null : synth;
+      }
+      return null;
+    });
+
+    await service.poll();
+
+    expect(synth.txid).toBe('realtxid'); // attribution resolved in place
+    expect(synth.status).toBe('confirmed');
     expect(ledger.postEntry).toHaveBeenCalledWith(
-      m, wallet, expect.objectContaining({ amount: '0.50000000' }),
-      'deposit_confirmed', '0.50000000', 'credit',
+      m, wallet, synth, 'deposit_confirmed', '0.50000000', 'credit',
     );
-    // creditedAmount advanced to the observed balance
-    const savedDep = m.save.mock.calls.map((c: any[]) => c[0])
-      .find((o: any) => o?.creditedAmount !== undefined);
-    expect(savedDep.creditedAmount).toBe('0.5');
-    expect(notifier.notify).toHaveBeenCalledWith('deposit.confirmed', expect.anything());
   });
 
   it('does nothing when balance equals creditedAmount', async () => {

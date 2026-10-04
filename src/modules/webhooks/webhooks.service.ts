@@ -69,6 +69,11 @@ export class WebhooksService {
 
     try {
       const result = await this.process(payload);
+      if (result.status === 'deferred') {
+        // Tx not yet indexed — stay 'received' so the sweeper reprocesses;
+        // marking 'processed' permanently drops the event.
+        return result;
+      }
       await this.events.update(
         { provider: 'tatum', externalEventKey: key },
         { status: 'processed', processedAt: new Date() },
@@ -84,21 +89,41 @@ export class WebhooksService {
   }
 
   private async process(payload: TatumAddressEvent): Promise<{ status: string }> {
-    const dep = await this.addresses.findOne({
+    // An address may be watched for several assets (wrong-asset recovery
+    // watches every same-chain asset). findOne picks an arbitrary row —
+    // resolve against EACH candidate; the asset whose outputs verify wins.
+    const deps = await this.addresses.find({
       where: { address: payload.address },
       relations: ['account', 'account.wallet'],
     });
-    if (!dep) {
+    if (!deps.length) {
       this.logger.warn(`Event for unknown address ${payload.address}`);
       return { status: 'unknown_address' };
     }
 
+    for (const dep of deps) {
+      const result = await this.processForAsset(dep, payload);
+      if (result !== 'skip') return { status: result };
+    }
+    // Every watched asset failed output verification — not one of ours
+    // (or token normalization can't see it). Log loudly; don't credit.
+    this.logger.error(
+      `tx ${payload.txId} does not pay ${payload.address} — possible spoofed webhook`,
+    );
+    return { status: 'rejected' };
+  }
+
+  private async processForAsset(
+    dep: DepositAddress,
+    payload: TatumAddressEvent,
+  ): Promise<string> {
     // VERIFY, don't trust: pull the real tx from the provider.
     const asset = getAsset(dep.asset);
+    if (!asset) return 'skip';
     const chainTx = await this.provider.getTransaction(payload.txId, dep.chain as any, asset);
     if (!chainTx) {
       this.logger.warn(`tx ${payload.txId} not yet visible on ${dep.chain} — will retry via sweep`);
-      return { status: 'deferred' };
+      return 'deferred';
     }
     // Refine confirmations from chain tip (provider may only report "mined").
     if (chainTx.blockNumber != null) {
@@ -112,12 +137,7 @@ export class WebhooksService {
     const output = chainTx.outputs.find(
       (o) => o.address.toLowerCase() === payload.address.toLowerCase(),
     );
-    if (!output) {
-      this.logger.error(
-        `tx ${payload.txId} does not pay ${payload.address} — possible spoofed webhook`,
-      );
-      return { status: 'rejected' };
-    }
+    if (!output) return 'skip'; // not this asset — try the next watched row
 
     const required = this.requiredConfirmations(dep.chain);
     const confirmed = chainTx.confirmations >= required;
@@ -136,7 +156,7 @@ export class WebhooksService {
       confirmed ? 'deposit.confirmed' : 'deposit.pending',
       tx,
     );
-    return { status: confirmed ? 'credited' : 'pending_confirmations' };
+    return confirmed ? 'credited' : 'pending_confirmations';
   }
 
   private async upsertTransaction(
@@ -186,6 +206,31 @@ export class WebhooksService {
    */
   @Cron('*/2 * * * *')
   async sweepPending(): Promise<void> {
+    // Reprocess deferred/failed webhook events — the provider can lag behind
+    // its own webhook delivery. 'received' stays eligible until processed;
+    // 'failed' retries until attempts hit the cap (then it stays failed and
+    // is visible for manual review rather than silently looping forever).
+    const retryable = await this.events.find({
+      where: [
+        { provider: 'tatum', status: 'received' },
+        { provider: 'tatum', status: 'failed' },
+      ],
+      take: 50,
+    });
+    for (const ev of retryable) {
+      if (ev.attempts >= 10) continue;
+      await this.events.update(ev.id, { attempts: ev.attempts + 1 });
+      try {
+        const result = await this.process(ev.payload as any);
+        if (result.status === 'deferred') continue;
+        await this.events.update(ev.id, {
+          status: 'processed', processedAt: new Date(), error: null as any,
+        });
+      } catch (e) {
+        await this.events.update(ev.id, { status: 'failed', error: errMsg(e) });
+      }
+    }
+
     const pending = await this.txs.find({
       where: { direction: 'inbound', status: 'pending' },
       relations: ['wallet'],

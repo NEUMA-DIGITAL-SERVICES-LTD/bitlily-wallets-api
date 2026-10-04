@@ -1,4 +1,4 @@
-import { Controller, Get, Module } from '@nestjs/common';
+import { Controller, Get, Module, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -59,12 +59,14 @@ class HealthController {
         ts: new Date().toISOString(),
       };
     } catch {
-      return {
+      // Must fail with a non-2xx — LBs and k8s readiness gates key on the
+      // status code; returning 200 with db:'down' keeps a dead pod serving.
+      throw new ServiceUnavailableException({
         status: 'not_ready',
         db: 'down',
         provider: providerConfigured ? 'configured' : 'missing_key',
         ts: new Date().toISOString(),
-      };
+      });
     }
   }
 }

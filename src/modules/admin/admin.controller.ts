@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Post, BadRequestException, UseGuards } fr
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { TransactionsService } from '../transactions/transactions.service';
@@ -35,6 +35,16 @@ class EnrollCustodyDto {
   @IsString()
   @IsOptional()
   treasuryAddress?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'REQUIRED to replace an existing signatureId — without it, a ' +
+      're-enroll updates non-key fields only (protects against silent key ' +
+      'rotation: a mismatched signatureId signs the wrong wallet).',
+  })
+  @IsBoolean()
+  @IsOptional()
+  rotate?: boolean;
 }
 
 /**
@@ -66,6 +76,13 @@ export class AdminController {
     const chain = dto.chain.toUpperCase();
     const existing = await this.custody.findOne({ where: { chain } });
     if (existing) {
+      if (existing.secretRef !== dto.signatureId && !dto.rotate) {
+        throw new BadRequestException(
+          `${chain} custody already enrolled with a different signatureId — ` +
+          `pass rotate:true to replace it. Silent rotation would sign all ` +
+          `future deposits with the WRONG wallet's keys.`,
+        );
+      }
       existing.xpub = dto.xpub ?? existing.xpub;
       existing.baseAddress = dto.baseAddress ?? existing.baseAddress;
       existing.secretRef = dto.signatureId;

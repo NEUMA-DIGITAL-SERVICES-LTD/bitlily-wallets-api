@@ -74,6 +74,14 @@ export class Transaction {
   @Column({ nullable: true })
   reference: string;
 
+  /**
+   * Caller-supplied idempotency key for outbound sends — partial unique
+   * index (wallet_id, idempotency_key) makes retries return the original
+   * row instead of double-debiting.
+   */
+  @Column({ name: 'idempotency_key', nullable: true })
+  idempotencyKey: string;
+
   /** Raw provider payload for auditability. */
   @Column({ type: 'jsonb', nullable: true })
   raw: Record<string, unknown>;

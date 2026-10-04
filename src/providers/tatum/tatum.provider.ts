@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
 import axios, { AxiosInstance } from 'axios';
 import { AssetDef, Chain } from '../../config/assets';
 import { parseErc20Transfers } from './evm-logs';
@@ -57,6 +58,36 @@ function fromRaw(raw: string, decimals: number): string {
   const whole = v / base;
   const frac = (v % base).toString().padStart(decimals, '0').replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : whole.toString();
+}
+
+const BASE58_ALPHABET =
+  '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+/** hex (41-prefixed or 20-byte) → TRON base58check address. */
+function tronBase58(hexAddr: string): string | null {
+  try {
+    const hex = hexAddr.startsWith('41') ? hexAddr : `41${hexAddr}`;
+    const bytes = Buffer.from(hex, 'hex');
+    if (bytes.length !== 21 || bytes[0] !== 0x41) return null;
+    const checksum = createHash('sha256')
+      .update(createHash('sha256').update(bytes).digest())
+      .digest()
+      .subarray(0, 4);
+    const payload = Buffer.concat([bytes, checksum]);
+    let n = BigInt('0x' + payload.toString('hex'));
+    let out = '';
+    while (n > 0n) {
+      out = BASE58_ALPHABET[Number(n % 58n)] + out;
+      n /= 58n;
+    }
+    for (const b of payload) {
+      if (b === 0) out = '1' + out;
+      else break;
+    }
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -239,7 +270,10 @@ export class TatumProvider implements BlockchainProvider {
           outs = (meta.meta?.postTokenBalances ?? [])
             .filter((b: any) => b.mint === asset.contract)
             .map((b: any) => ({
-              address: addrAt(b.accountIndex),
+              // The token-balance's OWNER is the depositable wallet;
+              // accountIndex→accountKeys yields the token *account* address
+              // (ATA), which never matches a watched wallet address.
+              address: b.owner ?? addrAt(b.accountIndex),
               amount: String(
                 Number(b.uiTokenAmount?.uiAmount ?? 0) - (pre.get(b.accountIndex) ?? 0),
               ),
@@ -272,13 +306,28 @@ export class TatumProvider implements BlockchainProvider {
       case 'TRON': {
         // `?? {}` made the old ternary always-truthy — the unsafe branch
         // then dereferenced raw_data.contract on txs that lack raw_data.
-        const v = data.raw_data?.contract?.[0]?.parameter?.value;
-        const outs = v
-          ? [{
-              address: v.to_address ?? v.contract_address ?? '',
-              amount: String((v.amount ?? 0) / 1e6),
-            }]
-          : [];
+        const contracts = data.raw_data?.contract ?? [];
+        const v = contracts[0]?.parameter?.value;
+        let outs: { address: string; amount: string }[] = [];
+        if (asset?.type === 'token' && v?.data) {
+          // TRC20 sends are TriggerSmartContract calls: to_address is the
+          // CONTRACT, and the recipient/amount live in the ABI `data`
+          // (a9059cbb + 32-byte addr + 32-byte amount, tron-hex = 41+20b).
+          const call = String(v.data).replace(/^0x/, '');
+          if (call.startsWith('a9059cbb') && call.length >= 136) {
+            const toHex = call.slice(8 + 24, 8 + 64); // last 20B of the to-word
+            const amount = BigInt('0x' + call.slice(72, 136));
+            const to = tronBase58(toHex);
+            outs = to
+              ? [{ address: to, amount: fromRaw(amount.toString(), asset.decimals) }]
+              : [];
+          }
+        } else if (v) {
+          outs = [{
+            address: v.to_address ?? v.contract_address ?? '',
+            amount: String((v.amount ?? 0) / 1e6),
+          }];
+        }
         const conf = data.ret?.[0]?.contractRet === 'SUCCESS' ? 20 : 0;
         return {
           txid, chain, outputs: outs,
@@ -341,11 +390,21 @@ export class TatumProvider implements BlockchainProvider {
       // 'litecoin' 400s, which silently zeroed fee estimates. UTXO chains
       // return sats/byte — convert to coin units over a ~226-byte tx or
       // callers subtract "10" as if it were a whole-coin fee.
-      const { data } = await this.http.get(`/v3/blockchain/fee/${asset.chain}`).catch(() => ({ data: null }));
+      const { data } = await this.http.get(
+        `/v3/blockchain/fee/${TATUM_CHAIN_CODE[asset.chain] ?? asset.chain}`,
+      ).catch(() => ({ data: null }));
       const rate = Number(data?.fast ?? data?.medium ?? 0);
       const fee = (asset.chain === 'BTC' || asset.chain === 'LTC')
         ? String((rate * 226) / 1e8)
         : String(rate || '0');
+      // A zero fee here means "unknown", not "free" — callers subtract it
+      // from sweep amounts, so silence produces full-balance sends that
+      // fail on-chain with insufficient-for-fee. Fail loudly instead.
+      if (!rate || parseFloat(fee) <= 0) {
+        throw new Error(
+          `Fee estimation unavailable for ${asset.code} — refusing to guess`,
+        );
+      }
       return { asset: asset.code, fee, speed: 'medium' };
     }
   }

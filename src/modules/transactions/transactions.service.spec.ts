@@ -12,10 +12,12 @@ import { Transaction } from '../../database/entities/transaction.entity';
 describe('TransactionsService.send', () => {
   const wallet = { id: 'w1' };
   const account = { id: 'acct1', wallet, chain: 'ethereum' };
+  // Valid-format address — the service rejects implausible destinations
+  // before any ledger movement.
   const dto = {
     walletId: 'w1',
     asset: 'ETH',
-    toAddress: '0xdest',
+    toAddress: '0x' + 'ab'.repeat(20),
     amount: '0.01',
     reference: 'payout-1',
   };
@@ -34,8 +36,9 @@ describe('TransactionsService.send', () => {
       save: jest.fn(async (_e: any, o?: any) => ({ ...(o ?? _e), id: 'tx-1' })),
       create: jest.fn((_e: any, o: any) => o),
       update: jest.fn(),
+      findOneOrFail: jest.fn().mockResolvedValue(wallet),
     };
-    txs = { update: jest.fn() };
+    txs = { update: jest.fn(), findOne: jest.fn().mockResolvedValue(null) };
     accounts = { findOne: jest.fn().mockResolvedValue(account) };
     provider = { sendTransaction: jest.fn() };
     ledger = {
@@ -101,5 +104,37 @@ describe('TransactionsService.send', () => {
     );
     expect(notifier.notify).not.toHaveBeenCalled();
     expect(txs.update).not.toHaveBeenCalled(); // never a real txid
+  });
+
+  it('rejects non-positive amounts before any ledger movement', async () => {
+    for (const amount of ['0', '-5', 'abc', '']) {
+      await expect(service.send({ ...dto, amount })).rejects.toThrow(
+        /greater than zero|positive decimal/,
+      );
+    }
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed destination addresses before the debit', async () => {
+    await expect(
+      service.send({ ...dto, toAddress: 'not-an-address' }),
+    ).rejects.toThrow(/not a valid ETH address/);
+    // Wrong chain's format must not pass either.
+    await expect(
+      service.send({ ...dto, toAddress: 'mvw7cGjmWaSBFeQmGebZeVBVYx7h9pU2k' }),
+    ).rejects.toThrow(/not a valid ETH address/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('returns the existing row when the idempotency key was seen before', async () => {
+    const prior = { id: 'tx-orig', txid: '0xreal' };
+    txs.findOne.mockResolvedValue(prior);
+
+    const tx = await service.send({ ...dto, idempotencyKey: 'k-1' });
+
+    expect(tx).toBe(prior);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 });

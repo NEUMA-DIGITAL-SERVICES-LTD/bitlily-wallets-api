@@ -10,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { AssetDef, getAsset } from '../../config/assets';
@@ -20,7 +21,8 @@ import {
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
 import { SendTransactionDto } from './transactions.dto';
-import { errMsg } from '../../common/errors';
+import { errCode, errMsg } from '../../common/errors';
+import { isPlausibleAddress } from '../../common/address-validation';
 
 @Injectable()
 export class TransactionsService {
@@ -48,6 +50,22 @@ export class TransactionsService {
     const asset = getAsset(dto.asset);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${dto.asset}`);
 
+    // The DTO regex admits '0' — reject non-positive here too; ledger math
+    // assumes strictly positive amounts in both directions.
+    const amount = parseFloat(dto.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('amount must be greater than zero');
+    }
+
+    // Reject implausible destination formats BEFORE the debit — a typo'd
+    // address either burns funds outright or fails at broadcast AFTER the
+    // ledger moved. Charset/length only; checksums stay the chain's job.
+    if (!isPlausibleAddress(asset.chain, dto.toAddress)) {
+      throw new BadRequestException(
+        `${dto.toAddress} is not a valid ${asset.chain} address format`,
+      );
+    }
+
     // Accounts are per-chain — a token send signs via its chain's account.
     const account = await this.accounts.findOne({
       where: { wallet: { id: dto.walletId }, chain: asset.chain },
@@ -55,49 +73,88 @@ export class TransactionsService {
     });
     if (!account) throw new NotFoundException(`No ${asset.chain} account on wallet`);
 
-    // Guard: ledger must cover the send.
-    const balance = await this.ledger.getBalance(dto.walletId, asset.code);
-    if (parseFloat(balance) < parseFloat(dto.amount)) {
-      throw new BadRequestException(
-        `Insufficient ${asset.code} balance: have ${balance}, need ${dto.amount}`,
-      );
+    // Idempotency: a retry after a client-side timeout must return the
+    // original row, not debit + broadcast a second time. The caller owns
+    // key uniqueness per wallet.
+    if (dto.idempotencyKey) {
+      const dupe = await this.txs.findOne({
+        where: {
+          wallet: { id: dto.walletId },
+          direction: 'outbound',
+          idempotencyKey: dto.idempotencyKey,
+        },
+      });
+      if (dupe) return dupe;
     }
 
     // Withdrawal policy — circuit breakers, applied before any debit.
     const limits = this.config.get('limits') ?? { maxPerTx: {}, approvalAbove: {} };
     const max = limits.maxPerTx?.[asset.code];
-    if (max && parseFloat(dto.amount) > parseFloat(max)) {
+    if (max && amount > parseFloat(max)) {
       throw new BadRequestException(
         `Amount ${dto.amount} ${asset.code} exceeds per-transaction limit ${max}`,
       );
     }
     const needsApproval = (() => {
       const thr = limits.approvalAbove?.[asset.code];
-      return thr ? parseFloat(dto.amount) >= parseFloat(thr) : false;
+      return thr ? amount >= parseFloat(thr) : false;
     })();
 
     // Debit + pending row FIRST, atomically — a crash between here and
     // broadcast leaves a reconcilable pending row (placeholder txid).
     // Broadcasting first and recording after is how funds get double-sent
     // or moved without a ledger record.
-    const tx = await this.dataSource.transaction(async (em) => {
-      const t = await em.save(
-        em.create(Transaction, {
-          wallet: account.wallet,
-          direction: 'outbound',
-          chain: asset.chain,
-          asset: asset.code,
-          txid: `pending:${crypto.randomUUID()}`,
-          address: dto.toAddress,
-          amount: dto.amount,
-          status: needsApproval ? 'requires_approval' : 'pending',
-          requiredConfirmations: this.requiredConfirmations(asset.chain),
-          reference: dto.reference,
-        }),
-      );
-      await this.ledger.postEntry(em, account.wallet, t, 'withdrawal', dto.amount, 'debit');
-      return t;
-    });
+    let tx: Transaction;
+    try {
+      tx = await this.dataSource.transaction(async (em) => {
+        // Serialize debits per wallet: lock the wallet row and re-check the
+        // balance INSIDE the transaction. Checking outside is a TOCTOU —
+        // two concurrent sends both see the pre-debit balance and both pass.
+        await em.findOneOrFail(Wallet, {
+          where: { id: account.wallet.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        const balance = await this.ledger.getBalance(dto.walletId, asset.code);
+        if (parseFloat(balance) < amount) {
+          throw new BadRequestException(
+            `Insufficient ${asset.code} balance: have ${balance}, need ${dto.amount}`,
+          );
+        }
+        const t = await em.save(
+          em.create(Transaction, {
+            wallet: account.wallet,
+            direction: 'outbound',
+            chain: asset.chain,
+            asset: asset.code,
+            txid: `pending:${crypto.randomUUID()}`,
+            address: dto.toAddress,
+            amount: dto.amount,
+            status: needsApproval ? 'requires_approval' : 'pending',
+            requiredConfirmations: this.requiredConfirmations(asset.chain),
+            reference: dto.reference,
+            idempotencyKey: dto.idempotencyKey,
+          }),
+        );
+        await this.ledger.postEntry(em, account.wallet, t, 'withdrawal', dto.amount, 'debit');
+        return t;
+      });
+    } catch (e) {
+      // Two concurrent first-sends with the same key: both pass the dupe
+      // check, the loser's INSERT hits UQ_tx_idempotency and its whole
+      // transaction (debit included) rolls back. Return the winner's row —
+      // that IS the idempotent response, not an error.
+      if (errCode(e) === '23505' && dto.idempotencyKey) {
+        const winner = await this.txs.findOne({
+          where: {
+            wallet: { id: dto.walletId },
+            direction: 'outbound',
+            idempotencyKey: dto.idempotencyKey,
+          },
+        });
+        if (winner) return winner;
+      }
+      throw e;
+    }
 
     if (needsApproval) {
       // Funds stay debited (reserved) until an admin approves or rejects —

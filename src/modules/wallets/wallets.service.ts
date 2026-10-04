@@ -154,10 +154,14 @@ export class WalletsService {
       // instead of colliding on the (address, asset) unique index. Per-order
       // SOL attribution needs memo/keypair-per-order — tracked as a gap.
       if (account.baseAddress) {
+        // Reuse THE row regardless of status — the (address,asset) unique
+        // index means inserting another row 500s forever once the first
+        // retires (live-caught: SOL wallets broke after one expiry cycle).
         const existing = await em.findOne(DepositAddress, {
-          where: { account: { id: account.id }, asset: asset.code, status: 'active' },
+          where: { account: { id: account.id }, asset: asset.code },
         });
         if (existing) {
+          existing.status = 'active';
           existing.reference = reference ?? existing.reference;
           existing.expiresAt = expiresAt;
           const saved = await em.save(existing);

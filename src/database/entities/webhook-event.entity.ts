@@ -34,6 +34,10 @@ export class WebhookEvent {
   @Column({ type: 'text', nullable: true })
   error: string;
 
+  /** Reprocessing counter — deferred/failed events retry via the sweeper. */
+  @Column({ default: 0 })
+  attempts: number;
+
   @CreateDateColumn({ name: 'received_at' })
   receivedAt: Date;
 
