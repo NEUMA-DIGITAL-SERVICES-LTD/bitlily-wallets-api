@@ -13,6 +13,7 @@ import {
   serviceConfig,
   sweepConfig,
   tatumConfig,
+  treasuryConfig,
   webhookConfig,
 } from './config/configuration';
 import { ALL_ENTITIES } from './database/entities';
@@ -75,7 +76,7 @@ class HealthController {
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig, limitsConfig, reconcileConfig],
+      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig, limitsConfig, reconcileConfig, treasuryConfig],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

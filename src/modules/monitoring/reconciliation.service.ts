@@ -59,8 +59,47 @@ export class ReconciliationService {
           this.logger.warn(`Reconciliation skipped for ${asset.code}: ${errMsg(e)}`);
         }
       }
+      await this.checkGasFloors();
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * Treasury gas-floor check — a treasury can sign sends it can't afford to
+   * broadcast (seen live: POL treasury 0.0073 vs 0.05 ledger; gas spend is
+   * never a ledger event). Once per chain, reads the on-chain NATIVE
+   * balance and alerts when it drops below the floor.
+   */
+  private async checkGasFloors(): Promise<void> {
+    const floors = this.config.get<Record<string, number>>('treasury.gasFloor') ?? {};
+    const accounts = await this.custody.find();
+    for (const acct of accounts) {
+      const treasury = acct.treasuryAddress ?? acct.baseAddress;
+      const nativeCode = acct.chain === 'POLYGON' ? 'POL' : acct.chain;
+      const floor = floors[acct.chain];
+      if (!treasury || floor == null) continue;
+      const asset = enabledAssets().find((a) => a.code === nativeCode && a.type === 'native');
+      if (!asset) continue;
+      let bal: number;
+      try {
+        bal = parseFloat(await this.provider.getAddressBalance(treasury, asset as any));
+      } catch (e) {
+        this.logger.warn(`Gas-floor balance read failed for ${acct.chain} treasury: ${errMsg(e)}`);
+        continue;
+      }
+      if (bal < floor) {
+        this.logger.error(
+          `Treasury gas low on ${acct.chain}: ${bal} < floor ${floor} ` +
+          `(${treasury}) — sends will fail broadcast until refilled`,
+        );
+        await this.notifier.notifyEvent('treasury.gas_low', {
+          chain: acct.chain,
+          treasury,
+          balance: String(bal),
+          floor: String(floor),
+        });
+      }
     }
   }
 

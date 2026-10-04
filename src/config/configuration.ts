@@ -50,6 +50,22 @@ export const reconcileConfig = registerAs('reconcile', () => ({
   enabled: process.env.RECONCILE_ENABLED !== 'false',
 }));
 
+export const treasuryConfig = registerAs('treasury', () => {
+  let gasFloor: Record<string, number> = {};
+  try { gasFloor = process.env.TREASURY_GAS_FLOOR ? JSON.parse(process.env.TREASURY_GAS_FLOOR) : {}; }
+  catch { gasFloor = {}; }
+  return {
+    /** On-chain native balance below this at a treasury → treasury.gas_low
+     *  alert. Gas spend isn't a ledger event, so the on-chain number is the
+     *  only truth. JSON env: TREASURY_GAS_FLOOR='{"ETH":0.05}' overrides. */
+    gasFloor: {
+      BTC: 0.0002, LTC: 0.005, ETH: 0.01,
+      POLYGON: 0.5, SOL: 0.05, TRON: 100,
+      ...gasFloor,
+    } as Record<string, number>,
+  };
+});
+
 export const sweepConfig = registerAs('sweep', () => ({
   gasTopUp: parseFloat(process.env.SWEEP_GAS_TOP_UP ?? '0.005'),
 }));
