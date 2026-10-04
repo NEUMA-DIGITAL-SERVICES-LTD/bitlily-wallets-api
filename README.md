@@ -82,7 +82,9 @@ Swagger UI at `/docs`.
   until a real txid confirms (no 0-conf credits).
 - **Errors** return `{code, message, requestId}` — internals never leak.
 - **Verify-before-credit**: webhook payloads are never trusted — the tx is
-  re-fetched and its outputs checked against the deposit address.
+  re-fetched and its outputs checked against the deposit address. With
+  `TATUM_WEBHOOK_HMAC_SECRET` set, ingress also requires Tatum's
+  `x-payload-hash` (HMAC-SHA512); the API key is self-enrolled at boot.
 - **Confirmation thresholds** per chain (`CONFIRMATIONS_*` env); a 2-min cron
   sweeper re-checks pending txs so a dropped webhook is non-fatal.
 - **Outbound webhooks** to the main app are HMAC-SHA256 signed and persisted

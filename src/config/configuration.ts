@@ -15,6 +15,11 @@ export const tatumConfig = registerAs('tatum', () => ({
   useKms: process.env.TATUM_USE_KMS === 'true',
   kmsUrl: process.env.KMS_URL ?? '',
   kmsApiKey: process.env.KMS_API_KEY ?? '',
+  // When set, /api/v1/webhooks/tatum REQUIRES a valid x-payload-hash
+  // (HMAC-SHA512, Base64). Tatum only sends it after the API key is
+  // enrolled via PUT /v3/subscription/enableWebHookHmac — the service
+  // self-enrolls at boot when this is configured.
+  webhookHmacSecret: process.env.TATUM_WEBHOOK_HMAC_SECRET ?? '',
 }));
 
 export const webhookConfig = registerAs('webhook', () => ({

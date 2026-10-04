@@ -70,7 +70,7 @@ describe('OutboundStatusService', () => {
       expect.objectContaining({ txid: '0xreal' }),
     );
     expect(notifier.notify).toHaveBeenCalledWith(
-      'transaction.broadcast',
+      'withdrawal.broadcast',
       expect.objectContaining({ txid: '0xreal' }),
     );
     // No reversal — funds moved.

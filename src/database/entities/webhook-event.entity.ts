@@ -22,7 +22,7 @@ export class WebhookEvent {
   @Column()
   provider: string;
 
-  @Column()
+  @Column({ name: 'external_event_key' })
   externalEventKey: string;
 
   @Column({ type: 'jsonb' })

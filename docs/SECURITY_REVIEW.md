@@ -39,7 +39,7 @@ Bitlily app ──REST──▶ crypto-service ──REST──▶ Tatum v3 ─�
 | Reorg un-credits a deposit | poller tracks confirmations; reversal entries on drop below threshold | unit-tested + reorg logic |
 | Sweep commingles customer & custody funds | derivation index 0 reserved for treasury; deposits start at 1 | live LTC sweep used index-1 key |
 | UTXO send burns unspent input as fee | `fee` + `changeAddress` pinned in body (Tatum does NOT auto-change) | live burn caught: 105k sats lost on testnet; fix verified on-chain |
-| Fake/malformed webhook credits | `X-Webhook-Signature` HMAC + per-minute rate limit | code; signature verification is a main-app checklist item |
+| Fake/malformed webhook credits | `x-payload-hash` HMAC-SHA512 verified at ingress + verify-by-refetch + per-minute rate limit | live: unsigned/invalid → 401, signed → processed |
 | KMS host compromise | keys never leave `wallet.dat`; external URL can't be re-aimed without redeploy | — |
 | Insider with admin key sweeps treasury | sweep endpoint is admin-only; KMS still requires its own signing | code |
 
@@ -66,11 +66,14 @@ A full-codebase audit found 22 issues. Status after the fix pass:
 | 15 | No global exception filter — raw internals/axios errors leaked | **FIXED** — `HttpExceptionFilter`: uniform `{code,message,requestId}`; non-HTTP throws → `INTERNAL_ERROR` |
 | 16 | `createWallet` all-or-nothing across chains | accepted risk — partial wallets would confuse custody enrollment |
 | 17 | `toAddress` had zero format validation | **FIXED** — per-chain charset/length/prefix gate before debit (live-verified) |
-| 18 | Inconsistent event names (`deposit.confirmed` vs `transaction.broadcast`) | open — renaming breaks consumers; document at webhook-signing integration |
+| 18 | Inconsistent event names (`deposit.confirmed` vs `transaction.broadcast`) | **FIXED** — normalized to `withdrawal.broadcast` before consumers integrate |
 | 19 | `estimateFee` returned `'0'` on total failure — read as "free" | **FIXED** — throws; fallback endpoint also fixed to use chain code |
 | 20 | Concurrent sweeps on one address could double-send | **FIXED** — pending `sweep:{depId}` row blocks a second sweep |
 | 21 | SOL native sweep: `estimateFee`→`'0'` → full-balance send → on-chain fee failure | **FIXED** — covered by #19 (unknown fee now refuses) |
-| 22 | `AssetParamDto` dead code | trivial — left |
+| 22 | `AssetParamDto` dead code | **FIXED** — removed |
+| 23 | Inbound webhook had no origin authentication | **FIXED** — `TATUM_WEBHOOK_HMAC_SECRET` + `x-payload-hash` (HMAC-SHA512/Base64, `timingSafeEqual`); service self-enrolls the API key via `PUT /v3/subscription` at boot. **Live-verified: unsigned/invalid → 401, valid → processed** |
+| 24 | `webhook_events.externalEventKey` entity↔migration column mismatch (`external_event_key`) — every webhook insert crashed | **FIXED** — found by the HMAC live test; entity name pinned; full-entity camelCase sweep found no others |
+| 25 | `orIgnore()` dedupe check tested `identifiers.length` — conflicts return `[null]`, so 'duplicate' never reported and replays reprocessed | **FIXED** — checks `raw.length`; live-verified replay → `duplicate` |
 
 ## Honest limitations (review these first)
 
@@ -132,7 +135,8 @@ residual blind spots:
 
 - [ ] Production `WITHDRAWAL_LIMITS`/`APPROVAL_ABOVE` values (config,
       currently test-tuned)
-- [ ] Webhook signature verification on the main-app side
+- [ ] `TATUM_WEBHOOK_HMAC_SECRET` production value + one live Tatum
+      delivery to confirm end-to-end signature compatibility
 - [ ] KMS `wallet.dat` backup/restore drill
 - [ ] Rate-limit tuning under real load (defaults are conservative)
 - [ ] Tatum plan/rate-tier — credits burn under polling load at scale

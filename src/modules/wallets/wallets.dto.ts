@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class CreateWalletDto {
   @ApiProperty({ description: 'The user ID in the main Bitlily application' })
@@ -56,8 +56,4 @@ export class WatchAddressDto {
   expiresInMinutes?: number;
 }
 
-export class AssetParamDto {
-  @IsString()
-  @Matches(/^[A-Z0-9_]+$/)
-  asset: string;
-}
+

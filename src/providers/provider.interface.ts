@@ -122,6 +122,13 @@ export interface BlockchainProvider {
   createAddressSubscription?(address: string, chain: Chain): Promise<SubscriptionResult>;
 
   /**
+   * Enroll the API key for webhook HMAC — providers that support
+   * payload signing only send the signature header after opt-in.
+   * Idempotent; called at boot when a webhook secret is configured.
+   */
+  enableWebhookHmac?(hmacSecret: string): Promise<void>;
+
+  /**
    * Recent transactions paying an address — used to attribute a detected
    * deposit to a txid when polling. May return [] on chains where the
    * provider lacks a cheap per-address history endpoint; callers must

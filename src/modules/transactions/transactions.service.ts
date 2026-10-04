@@ -207,7 +207,7 @@ export class TransactionsService {
       if (!txid) throw new Error('provider returned no txid');
       await this.txs.update(tx.id, { txid });
       tx.txid = txid;
-      await this.notifier.notify('transaction.broadcast', tx);
+      await this.notifier.notify('withdrawal.broadcast', tx);
       return tx;
     } catch (e) {
       // Broadcast failed — reverse the debit so the ledger stays truthful.

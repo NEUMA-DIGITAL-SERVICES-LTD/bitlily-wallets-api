@@ -79,7 +79,7 @@ export class OutboundStatusService {
             tx.txid = sig.txid;
             tx.raw = { ...(tx.raw ?? {}), signingComplete: true };
             await this.txs.save(tx);
-            await this.notifier.notify('transaction.broadcast', tx);
+            await this.notifier.notify('withdrawal.broadcast', tx);
             // Fall through below — next statement continues the refresh.
           } else if (sig?.status === 'failed' || sig === null) {
             // Daemon rejected/dropped the request — never broadcast:

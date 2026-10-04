@@ -87,7 +87,7 @@ describe('TransactionsService.send', () => {
     expect(created.txid).toMatch(/^pending:/);
     expect(txs.update).toHaveBeenCalledWith('tx-1', { txid: '0xreal' });
     expect(tx.txid).toBe('0xreal');
-    expect(notifier.notify).toHaveBeenCalledWith('transaction.broadcast', tx);
+    expect(notifier.notify).toHaveBeenCalledWith('withdrawal.broadcast', tx);
   });
 
   it('marks failed and reverses the debit when broadcast throws', async () => {

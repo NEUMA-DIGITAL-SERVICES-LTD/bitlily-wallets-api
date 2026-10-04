@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectEntityManager, InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
@@ -39,7 +39,7 @@ interface TatumAddressEvent {
  *     record a `pending` Transaction; the cron sweeper confirms them.
  */
 @Injectable()
-export class WebhooksService {
+export class WebhooksService implements OnApplicationBootstrap {
   private readonly logger = new Logger(WebhooksService.name);
 
   constructor(
@@ -53,6 +53,24 @@ export class WebhooksService {
     private readonly config: ConfigService,
   ) {}
 
+  /**
+   * Tatum only sends x-payload-hash after the API key opts in — self-enroll
+   * at boot when a secret is configured. Failure is logged loudly: the
+   * controller fails closed and unsigned events get 401s either way.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    const secret = this.config.get<string>('tatum.webhookHmacSecret');
+    if (!secret) return;
+    try {
+      await this.provider.enableWebhookHmac?.(secret);
+      this.logger.log('Webhook HMAC enrolled — x-payload-hash required');
+    } catch (e) {
+      this.logger.error(
+        `Webhook HMAC enrollment failed: ${errMsg(e)} — unsigned events will be rejected`,
+      );
+    }
+  }
+
   async handleTatumEvent(payload: TatumAddressEvent): Promise<{ status: string }> {
     const key = `${payload.txId}:${payload.address}:${payload.asset}`;
     const inserted = await this.events
@@ -63,7 +81,10 @@ export class WebhooksService {
       .orIgnore()
       .execute();
 
-    if (inserted.identifiers.length === 0) {
+    // Under orIgnore a conflicted insert returns identifiers:[null] — NOT
+    // an empty array — so identifiers.length can't detect the replay.
+    // `raw` is the RETURNING result: empty iff the row already existed.
+    if (inserted.raw.length === 0) {
       return { status: 'duplicate' }; // replay — acknowledged, not reprocessed
     }
 

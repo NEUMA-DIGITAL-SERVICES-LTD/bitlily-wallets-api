@@ -373,6 +373,17 @@ export class TatumProvider implements BlockchainProvider {
     }
   }
 
+  /**
+   * Tatum only sends x-payload-hash after the API key is enrolled — this
+   * PUT is idempotent and keyed to OUR api key. After enrollment every
+   * notification carries Base64(HMAC-SHA512(body, secret)).
+   */
+  async enableWebhookHmac(hmacSecret: string): Promise<void> {
+    // PUT /v3/subscription (operationId enableWebHookHmac) — NOT
+    // /subscription/enableWebHookHmac, which is a different endpoint.
+    await this.http.put('/v3/subscription', { hmacSecret });
+  }
+
   async estimateFee(asset: AssetDef, toAddress: string, amount: string): Promise<FeeEstimate> {
     const path = CHAIN_PATH[asset.chain];
     try {
