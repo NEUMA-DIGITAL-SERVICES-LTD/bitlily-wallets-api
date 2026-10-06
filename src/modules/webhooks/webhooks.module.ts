@@ -5,6 +5,7 @@ import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { WebhooksController } from './webhooks.controller';
+import { WebhookDocsController } from './webhook-docs.controller';
 import { WebhooksService } from './webhooks.service';
 
 @Module({
@@ -12,7 +13,7 @@ import { WebhooksService } from './webhooks.service';
     TypeOrmModule.forFeature([WebhookEvent, DepositAddress, Transaction]),
     NotificationsModule,
   ],
-  controllers: [WebhooksController],
+  controllers: [WebhooksController, WebhookDocsController],
   providers: [WebhooksService],
 })
 export class WebhooksModule {}
