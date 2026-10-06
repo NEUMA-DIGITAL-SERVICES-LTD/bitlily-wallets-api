@@ -33,6 +33,8 @@ import { errCode, errMsg } from '../../common/errors';
 export class DepositPollerService {
   private readonly logger = new Logger(DepositPollerService.name);
   private running = false;
+  /** (address, asset) pairs already warn-logged as shared/unattributable. */
+  private readonly sharedWarned = new Set<string>();
 
   constructor(
     @InjectRepository(DepositAddress)
@@ -69,6 +71,33 @@ export class DepositPollerService {
   private async checkAddress(dep: DepositAddress): Promise<void> {
     const asset = getAsset(dep.asset);
     if (!asset) return;
+
+    // Shared custody addresses (SOL's single enrolled baseAddress, any
+    // future account-model chain without per-wallet derivation) hold one
+    // row PER WALLET for the same (address, asset). A balance delta cannot
+    // tell whose deposit it is — crediting whichever row polls first would
+    // put funds in the wrong wallet. Skip and flag for ops: per-user
+    // attribution needs deposit memos (tracked gap) or manual crediting.
+    // Check BEFORE the provider call so ambiguous addresses cost no credits.
+    const shared = await this.addresses
+      .createQueryBuilder('da')
+      .innerJoin('da.account', 'wa')
+      .where('da.address = :address', { address: dep.address })
+      .andWhere('da.asset = :asset', { asset: dep.asset })
+      .andWhere('wa.wallet_id != :walletId', { walletId: dep.account.wallet.id })
+      .getCount();
+    if (shared > 0) {
+      const key = `${dep.address}:${dep.asset}`;
+      if (!this.sharedWarned.has(key)) {
+        this.sharedWarned.add(key);
+        this.logger.warn(
+          `${dep.address} ${dep.asset} is watched by multiple wallets (shared custody ` +
+          `address) — skipping auto-credit; deposits need memo attribution or manual ops credit`,
+        );
+      }
+      return;
+    }
+
     let observed: string;
     try {
       observed = await this.provider.getAddressBalance(dep.address, asset);

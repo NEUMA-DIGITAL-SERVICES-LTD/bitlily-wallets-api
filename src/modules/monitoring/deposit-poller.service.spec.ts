@@ -39,6 +39,14 @@ describe('DepositPollerService', () => {
         const [d] = await addresses.find();
         return { creditedAmount: d.creditedAmount };
       }),
+      // Shared-address ambiguity probe — 0 = this wallet owns the address
+      // exclusively, >0 = another wallet watches it too (skip crediting).
+      createQueryBuilder: jest.fn(() => ({
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+      })),
     };
     txs = {
       find: jest.fn().mockResolvedValue([]),
@@ -228,6 +236,29 @@ describe('DepositPollerService', () => {
 
     expect(addresses.update).toHaveBeenCalledWith('dep1', { creditedAmount: '0.1' });
     expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('never credits an address+asset shared by another wallet — shared custody cannot attribute', async () => {
+    // SOL's enrolled baseAddress is one custody address for ALL wallets:
+    // each holds its own watch row, and a balance delta can't tell whose
+    // deposit it is. Crediting whichever row polls first would put funds
+    // in the wrong wallet — an actual fund loss, not a bookkeeping quirk.
+    provider.getAddressBalance.mockResolvedValue('0.5');
+    addresses.createQueryBuilder.mockReturnValue({
+      innerJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      getCount: jest.fn().mockResolvedValue(1), // another wallet watches it
+    });
+
+    await service.poll();
+
+    // Skipped before even the balance call — ambiguous addresses cost
+    // no provider credits and produce no credit, no tx, no event.
+    expect(provider.getAddressBalance).not.toHaveBeenCalled();
+    expect(em.transaction).not.toHaveBeenCalled();
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
   });
 
   it('re-polling a confirmed deposit is a no-op (idempotent)', async () => {

@@ -25,11 +25,13 @@ export class WalletsController {
 
   @Post(':id/addresses')
   @ApiOperation({
-    summary: 'Generate a deposit address (optionally per-order via reference)',
+    summary:
+      'Generate a deposit address — persistent:true for a permanent ' +
+      'per-chain address (exchange model), default is per-order with TTL',
   })
   generateAddress(@Param('id') id: string, @Body() dto: GenerateAddressDto, @Req() req: any) {
     return this.wallets.generateDepositAddress(
-      id, req.appId, dto.asset, dto.reference, dto.expiresInMinutes,
+      id, req.appId, dto.asset, dto.reference, dto.expiresInMinutes, dto.persistent,
     );
   }
 

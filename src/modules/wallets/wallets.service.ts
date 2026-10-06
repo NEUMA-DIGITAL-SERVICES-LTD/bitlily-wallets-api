@@ -128,9 +128,11 @@ export class WalletsService {
   }
 
   /**
-   * Generates (or reuses for SOL) a deposit address for an asset.
-   * `reference` ties the address to an order/invoice in the main app —
-   * the Selly-style "unique address per payment" flow.
+   * Generates (or reuses) a deposit address for an asset.
+   * `persistent: true` = exchange model (Bybit-style): the wallet's ONE
+   * permanent address for this chain — first call derives it, later calls
+   * return the same row. Default = per-payment address with TTL +
+   * `reference` tying it to an order/invoice (Selly-style flow).
    */
   async generateDepositAddress(
     walletId: string,
@@ -138,12 +140,18 @@ export class WalletsService {
     assetCode: string,
     reference?: string,
     expiresInMinutes?: number,
+    persistent?: boolean,
   ): Promise<DepositAddress> {
     const asset = getAsset(assetCode);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
+    if (persistent && expiresInMinutes != null) {
+      throw new BadRequestException(
+        'persistent addresses never expire — expiresInMinutes cannot be combined with persistent',
+      );
+    }
 
     const ttl = expiresInMinutes ?? this.config.get<number>('detection.addressTtlMinutes');
-    const expiresAt = ttl ? new Date(Date.now() + ttl * 60_000) : null;
+    const expiresAt = persistent ? null : ttl ? new Date(Date.now() + ttl * 60_000) : null;
 
     return this.dataSource.transaction(async (em) => {
       // The account is per-CHAIN: USDC_ETH deposits derive from the wallet's
@@ -156,24 +164,56 @@ export class WalletsService {
         `No ${asset.chain} account for wallet ${walletId}`,
       );
 
+      // Persistent (exchange-style): one address per (wallet, asset) —
+      // reuse the existing row, promote any expiring row to permanent.
+      // reference is order-level metadata; it doesn't apply to a permanent
+      // user address, so a persistent request never overwrites it.
+      if (persistent) {
+        // Prefer the permanent row; else reuse the newest (promote it to
+        // permanent rather than deriving yet another address).
+        const [existing] = await em.find(DepositAddress, {
+          where: { account: { id: account.id }, asset: asset.code },
+          order: { expiresAt: 'DESC', createdAt: 'DESC' },
+          take: 1,
+        });
+        if (existing) {
+          existing.status = 'active';
+          existing.expiresAt = null;
+          const saved = await em.save(existing);
+          await this.ensureSameChainWatches(
+            em, account, saved.address, saved.derivationIndex, asset.code, null, reference,
+          );
+          return saved;
+        }
+      }
+
       // Account-model chains (SOL) have a single base address and cannot
       // derive fresh ones. Reuse the active row: refresh reference/expiry
       // instead of colliding on the (address, asset) unique index. Per-order
       // SOL attribution needs memo/keypair-per-order — tracked as a gap.
       if (account.baseAddress) {
-        // Reuse THE row regardless of status — the (address,asset) unique
-        // index means inserting another row 500s forever once the first
-        // retires (live-caught: SOL wallets broke after one expiry cycle).
+        // Reuse THE row regardless of status — the (account,address,asset)
+        // unique index means inserting another row 500s forever once the
+        // first retires (live-caught: SOL wallets broke after one cycle).
         const existing = await em.findOne(DepositAddress, {
           where: { account: { id: account.id }, asset: asset.code },
         });
         if (existing) {
           existing.status = 'active';
-          existing.reference = reference ?? existing.reference;
-          existing.expiresAt = expiresAt;
+          // A permanent row (persistent, or TTL=0 config) is never demoted
+          // by a per-payment request — account-model chains have only this
+          // one address, so stamping an expiry would silently retire the
+          // user's saved deposit address. Reference is order metadata and
+          // likewise must not bleed onto a permanent user address.
+          const permanent = existing.expiresAt === null;
+          if (!permanent) {
+            existing.reference = reference ?? existing.reference;
+            existing.expiresAt = expiresAt;
+          }
           const saved = await em.save(existing);
           await this.ensureSameChainWatches(
-            em, account, saved.address, saved.derivationIndex, asset.code, expiresAt, reference,
+            em, account, saved.address, saved.derivationIndex, asset.code,
+            permanent ? null : expiresAt, reference,
           );
           return saved;
         }
@@ -258,11 +298,26 @@ export class WalletsService {
     for (const other of enabledAssets().filter(
       (a) => a.chain === account.chain && a.code !== primaryAsset,
     )) {
+      // Scoped to THIS account — shared custody addresses (SOL) legitimately
+      // exist as rows under other wallets' accounts too; an unscoped lookup
+      // would mutate a foreign wallet's watch row and leave ours uncreated.
       const row = await em.findOne(DepositAddress, {
-        where: { address, asset: other.code },
+        where: { account: { id: account.id }, address, asset: other.code },
       });
       if (row) {
-        if (row.status !== 'active' || (expiresAt && row.expiresAt < expiresAt)) {
+        // Refresh when retired/expired; for a permanent parent (expiresAt
+        // null) promote any expiring watch — a permanent address with
+        // expiring recovery rows would silently lose wrong-asset coverage.
+        // Symmetrically, a permanent watch row is NEVER demoted: JS
+        // `null < Date` is true, so without the guard an expiring parent
+        // would stamp an expiry onto the permanent row.
+        const stale =
+          row.expiresAt === null
+            ? false
+            : expiresAt
+              ? row.expiresAt < expiresAt
+              : true;
+        if (row.status !== 'active' || stale) {
           row.status = 'active';
           row.expiresAt = expiresAt;
           await em.save(row);
@@ -309,7 +364,9 @@ export class WalletsService {
       });
       if (row) {
         row.status = 'active';
-        row.expiresAt = expiresAt;
+        // Permanent rows stay permanent — /watch revives/extends expiring
+        // rows but must never demote a persistent address to expirable.
+        if (row.expiresAt !== null) row.expiresAt = expiresAt;
         return em.save(row);
       }
       // No watch row for this asset — allowed only if the address is one of

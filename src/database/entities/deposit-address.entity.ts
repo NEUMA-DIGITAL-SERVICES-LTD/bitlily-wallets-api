@@ -18,12 +18,13 @@ export type DepositAddressStatus = 'active' | 'used' | 'retired';
  * order/invoice ID and it is echoed back in deposit webhooks.
  */
 /**
- * The watched pair is (address, asset): on account-model chains (SOL) the
- * same base address legitimately appears once per asset, and on EVM a
- * token deposit address may coincide with the native one.
+ * The watched tuple is (account, address, asset): on account-model chains
+ * (SOL) the same custody base address legitimately appears once per asset
+ * PER WALLET (all wallets share one enrolled custody address), and on EVM
+ * a token deposit address may coincide with the native one.
  */
 @Entity('deposit_addresses')
-@Unique(['address', 'asset'])
+@Unique(['account', 'address', 'asset'])
 export class DepositAddress {
   @PrimaryGeneratedColumn('uuid')
   id: string;
