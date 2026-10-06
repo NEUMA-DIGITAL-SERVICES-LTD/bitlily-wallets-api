@@ -15,12 +15,19 @@ import { WalletAccount } from './wallet-account.entity';
  * chain material (xpub / base address).
  */
 @Entity('wallets')
+@Index('UQ_wallets_app_external', ['appId', 'externalUserId'], { unique: true })
 export class Wallet {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  /** The user ID in the main Bitlily application. */
-  @Index({ unique: true })
+  /** Owning API client (tenant). Service keys resolve to an appId; every
+   * wallet lookup is scoped by it so one app can never touch another's
+   * users. 'default' = legacy SERVICE_API_KEYS callers. */
+  @Index()
+  @Column({ name: 'app_id', default: 'default' })
+  appId: string;
+
+  /** The user ID in the calling application — unique PER APP, not globally. */
   @Column({ name: 'external_user_id' })
   externalUserId: string;
 

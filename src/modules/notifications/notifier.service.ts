@@ -7,35 +7,44 @@ import { createHmac } from 'crypto';
 import { LessThanOrEqual, Repository } from 'typeorm';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { OutboundEvent } from '../../database/entities/outbound-event.entity';
+import { Wallet } from '../../database/entities/wallet.entity';
+import { ApiClient } from '../../config/configuration';
 import { errMsg } from '../../common/errors';
 
 /** ~4h of exponential retries (1,2,4,8…128 min) before dead-lettering. */
 const MAX_ATTEMPTS = 8;
 
+interface Route {
+  url: string;
+  secret: string;
+}
+
 /**
- * Outbound notifier — transactional outbox for events owed to the main
- * Bitlily app. Every event is persisted BEFORE delivery is attempted, then
- * retried by a cron sweep with exponential backoff. A consumer that is down
- * no longer loses deposit confirmations — the worst case is delay.
+ * Outbound notifier — transactional outbox for events owed to an
+ * integrating app. Every event is persisted BEFORE delivery is attempted,
+ * then retried by a cron sweep with exponential backoff. A consumer that is
+ * down no longer loses deposit confirmations — the worst case is delay.
  *
- * Payloads are HMAC-SHA256 signed (X-Webhook-Signature) so the main app can
+ * Routing is per-tenant: the event's wallet.appId selects the client's
+ * webhookUrl/webhookSecret from API_CLIENTS. App A's deposits never reach
+ * app B's server. Events with no wallet context (ops alerts) go to the
+ * global MAIN_APP_WEBHOOK_URL channel.
+ *
+ * Payloads are HMAC-SHA256 signed (X-Webhook-Signature) so the consumer can
  * verify authenticity. Consumers MUST be idempotent: events may be delivered
  * more than once if a response is lost after processing.
  */
 @Injectable()
 export class NotifierService {
   private readonly logger = new Logger(NotifierService.name);
-  private readonly url: string;
-  private readonly secret: string;
 
   constructor(
-    config: ConfigService,
+    private readonly config: ConfigService,
     @InjectRepository(OutboundEvent)
     private readonly outbox: Repository<OutboundEvent>,
-  ) {
-    this.url = config.get('webhook.mainAppUrl') ?? '';
-    this.secret = config.get('webhook.signingSecret') ?? '';
-  }
+    @InjectRepository(Wallet)
+    private readonly wallets: Repository<Wallet>,
+  ) {}
 
   /** Persist the event, then attempt immediate delivery. */
   async notify(event: string, tx: Transaction): Promise<void> {
@@ -55,14 +64,14 @@ export class NotifierService {
         reference: tx.reference,
       },
     };
-    const row = await this.enqueue(event, body, tx.id);
+    const row = await this.enqueue(event, body, tx.id, await this.appIdFor(tx));
     if (!row) return;
     await this.deliver(row);
   }
 
   /**
    * Non-transaction events (reconciliation divergence, ops alerts) — same
-   * outbox durability, arbitrary payload.
+   * outbox durability, arbitrary payload. No appId → global env channel.
    */
   async notifyEvent(event: string, data: Record<string, unknown>): Promise<void> {
     const row = await this.enqueue(event, { event, data }, undefined);
@@ -70,15 +79,32 @@ export class NotifierService {
     await this.deliver(row);
   }
 
+  /**
+   * tx.wallet may be a loaded entity or just { id } depending on the call
+   * site — fall back to a fetch so routing never silently defaults.
+   */
+  private async appIdFor(tx: Transaction): Promise<string | undefined> {
+    if (tx.wallet?.appId) return tx.wallet.appId;
+    if (!tx.wallet?.id) return undefined;
+    const w = await this.wallets.findOne({ where: { id: tx.wallet.id } });
+    return w?.appId;
+  }
+
   private async enqueue(
     event: string,
     payload: object,
     transactionId?: string,
+    appId?: string,
   ): Promise<OutboundEvent | null> {
     const row = await this.outbox.save(
-      this.outbox.create({ event, transactionId: transactionId ?? null, payload }),
+      this.outbox.create({
+        event,
+        transactionId: transactionId ?? null,
+        appId: appId ?? null,
+        payload,
+      }),
     );
-    if (!this.url) {
+    if (!this.routeFor(row.appId).url) {
       // No consumer configured (local dev) — leave pending; the sweep would
       // burn attempts pointlessly. Mark sent so the outbox stays clean.
       await this.outbox.update(row.id, { status: 'sent', sentAt: new Date() });
@@ -90,7 +116,6 @@ export class NotifierService {
   /** Retry sweep — picks up pending events past their backoff gate. */
   @Cron('* * * * *')
   async sweep(): Promise<void> {
-    if (!this.url) return;
     const due = await this.outbox.find({
       where: { status: 'pending', nextAttemptAt: LessThanOrEqual(new Date()) },
       order: { createdAt: 'ASC' },
@@ -99,11 +124,22 @@ export class NotifierService {
     for (const row of due) await this.deliver(row);
   }
 
+  private routeFor(appId: string | null | undefined): Route {
+    const client = (this.config.get<ApiClient[]>('service.clients') ?? [])
+      .find((c) => c.slug === appId);
+    return {
+      url: client?.webhookUrl ?? this.config.get('webhook.mainAppUrl') ?? '',
+      secret: client?.webhookSecret ?? this.config.get('webhook.signingSecret') ?? '',
+    };
+  }
+
   private async deliver(row: OutboundEvent): Promise<void> {
+    const { url, secret } = this.routeFor(row.appId);
+    if (!url) return;
     const raw = JSON.stringify(row.payload);
-    const signature = createHmac('sha256', this.secret).update(raw).digest('hex');
+    const signature = createHmac('sha256', secret).update(raw).digest('hex');
     try {
-      await axios.post(this.url, raw, {
+      await axios.post(url, raw, {
         headers: {
           'Content-Type': 'application/json',
           'X-Webhook-Signature': `sha256=${signature}`,

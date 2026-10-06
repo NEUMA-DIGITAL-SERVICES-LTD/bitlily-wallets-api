@@ -36,6 +36,13 @@ export class OutboundEvent {
   @Column({ name: 'transaction_id', nullable: true })
   transactionId: string;
 
+  /**
+   * Owning app — routes delivery to that client's webhookUrl and signs with
+   * its webhookSecret. NULL = ops event on the global env webhook channel.
+   */
+  @Column({ name: 'app_id', nullable: true })
+  appId: string | null;
+
   /** Fully-rendered JSON body sent to the consumer (signed payload). */
   @Column({ type: 'jsonb' })
   payload: Record<string, unknown>;

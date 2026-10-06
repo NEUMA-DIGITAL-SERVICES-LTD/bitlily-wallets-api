@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
 import { EstimateFeeQueryDto, SendTransactionDto } from './transactions.dto';
@@ -13,18 +13,19 @@ export class TransactionsController {
   @ApiOperation({ summary: 'Send a blockchain transaction (withdrawal)' })
   send(
     @Body() dto: SendTransactionDto,
+    @Req() req: any,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     // Header wins (Stripe convention); body field kept for clients that
     // can't set headers. Same dedupe semantics either way.
     dto.idempotencyKey ??= idempotencyKey;
-    return this.txs.send(dto);
+    return this.txs.send(dto, req.appId);
   }
 
   @Get('transactions/:id')
   @ApiOperation({ summary: 'Get transaction status' })
-  get(@Param('id') id: string) {
-    return this.txs.get(id);
+  get(@Param('id') id: string, @Req() req: any) {
+    return this.txs.get(id, req.appId);
   }
 
   @Get('fees/estimate')

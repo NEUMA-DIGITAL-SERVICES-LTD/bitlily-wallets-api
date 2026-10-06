@@ -46,7 +46,7 @@ export class TransactionsService {
    * reconciled (tx row exists with status=pending and no txid). Broadcasting
    * first and recording after is how funds get double-sent.
    */
-  async send(dto: SendTransactionDto): Promise<Transaction> {
+  async send(dto: SendTransactionDto, appId: string): Promise<Transaction> {
     const asset = getAsset(dto.asset);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${dto.asset}`);
 
@@ -67,8 +67,9 @@ export class TransactionsService {
     }
 
     // Accounts are per-chain — a token send signs via its chain's account.
+    // The appId scope is the tenant boundary: another app's walletId 404s here.
     const account = await this.accounts.findOne({
-      where: { wallet: { id: dto.walletId }, chain: asset.chain },
+      where: { wallet: { id: dto.walletId, appId }, chain: asset.chain },
       relations: ['wallet'],
     });
     if (!account) throw new NotFoundException(`No ${asset.chain} account on wallet`);
@@ -271,9 +272,11 @@ export class TransactionsService {
     return tx;
   }
 
-  async get(id: string): Promise<Transaction> {
-    const tx = await this.txs.findOne({ where: { id } });
-    if (!tx) throw new NotFoundException(`Transaction ${id} not found`);
+  async get(id: string, appId: string): Promise<Transaction> {
+    const tx = await this.txs.findOne({ where: { id }, relations: ['wallet'] });
+    if (!tx || tx.wallet?.appId !== appId) {
+      throw new NotFoundException(`Transaction ${id} not found`);
+    }
     return tx;
   }
 

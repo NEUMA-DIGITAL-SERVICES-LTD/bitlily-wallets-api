@@ -4,9 +4,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { TransactionsService } from '../transactions/transactions.service';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
+import { ApiClient } from '../../config/configuration';
 
 class EnrollCustodyDto {
   @ApiProperty({ description: 'Chain code, e.g. BTC, ETH, SOL' })
@@ -63,6 +65,7 @@ export class AdminController {
     @InjectRepository(CustodyAccount)
     private readonly custody: Repository<CustodyAccount>,
     private readonly transactions: TransactionsService,
+    private readonly config: ConfigService,
   ) {}
 
   @Post('custody')
@@ -104,6 +107,21 @@ export class AdminController {
   @ApiOperation({ summary: 'List enrolled custody wallets per chain' })
   list() {
     return this.custody.find();
+  }
+
+  @Get('clients')
+  @ApiOperation({
+    summary:
+      'List registered API clients (tenants) — slug, name, webhook URL ' +
+      'presence. Keys never leave this endpoint.',
+  })
+  clients() {
+    return (this.config.get<ApiClient[]>('service.clients') ?? []).map((c) => ({
+      slug: c.slug,
+      name: c.name ?? null,
+      keyTail: `…${c.apiKey.slice(-4)}`,
+      webhookConfigured: !!c.webhookUrl,
+    }));
   }
 
   @Post('withdrawals/:id/approve')

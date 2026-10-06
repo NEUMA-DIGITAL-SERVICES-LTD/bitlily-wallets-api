@@ -8,16 +8,20 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { SetMetadata } from '@nestjs/common';
 import { timingSafeEqual } from 'crypto';
+import { ApiClient } from '../config/configuration';
 
 /** Marks routes that skip API-key auth (webhook ingress, health). */
 export const IS_PUBLIC = 'isPublic';
 export const Public = () => SetMetadata(IS_PUBLIC, true);
 
 /**
- * Service-to-service auth: the main Bitlily app authenticates with an
- * X-API-Key header. Keys are provisioned via SERVICE_API_KEYS env and are
- * the only thing separating this API from the open internet — rotate
- * regularly and prefer per-environment keys.
+ * Service-to-service auth: an integrating app authenticates with an
+ * X-API-Key header. Keys come from two sources:
+ *   SERVICE_API_KEYS — legacy flat list; all resolve to the 'default' tenant
+ *   API_CLIENTS      — JSON [{slug, apiKey, webhookUrl, webhookSecret}];
+ *                      each key resolves to that client's slug
+ * The resolved slug is attached to req.appId and scopes every wallet
+ * lookup — app A cannot read or spend app B's wallets.
  */
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
@@ -35,16 +39,27 @@ export class ApiKeyGuard implements CanActivate {
 
     const req = ctx.switchToHttp().getRequest();
     const key = String(req.headers['x-api-key'] ?? '');
-    const valid: string[] = this.config.get('service.apiKeys') ?? [];
-    // Constant-time compare — Array.includes short-circuits and leaks
-    // match position via response timing.
-    const buf = Buffer.from(key);
-    const ok = key.length > 0 && valid.some(
-      (v) => v.length === key.length && timingSafeEqual(buf, Buffer.from(v)),
-    );
-    if (!ok) {
+
+    const appId = this.resolveAppId(key);
+    if (!appId) {
       throw new UnauthorizedException('Invalid or missing X-API-Key');
     }
+    req.appId = appId;
     return true;
+  }
+
+  private resolveAppId(key: string): string | null {
+    if (!key) return null;
+    const matches = (candidate: string) =>
+      candidate.length === key.length &&
+      timingSafeEqual(Buffer.from(key), Buffer.from(candidate));
+
+    for (const client of this.config.get<ApiClient[]>('service.clients') ?? []) {
+      if (matches(client.apiKey)) return client.slug;
+    }
+    for (const legacy of this.config.get<string[]>('service.apiKeys') ?? []) {
+      if (matches(legacy)) return 'default';
+    }
+    return null;
   }
 }

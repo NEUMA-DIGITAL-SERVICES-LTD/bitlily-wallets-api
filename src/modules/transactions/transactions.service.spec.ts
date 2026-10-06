@@ -61,7 +61,7 @@ describe('TransactionsService.send', () => {
 
   it('rejects when the ledger cannot cover the send', async () => {
     ledger.getBalance.mockResolvedValue('0.005');
-    await expect(service.send(dto)).rejects.toThrow(/Insufficient/);
+    await expect(service.send(dto, 'default')).rejects.toThrow(/Insufficient/);
     expect(provider.sendTransaction).not.toHaveBeenCalled();
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
@@ -69,7 +69,7 @@ describe('TransactionsService.send', () => {
   it('debits first, then broadcasts, then records the real txid', async () => {
     provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
 
-    const tx = await service.send(dto);
+    const tx = await service.send(dto, 'default');
 
     // Debit posted inside the DB transaction, before broadcast.
     // postEntry(em, wallet, tx, kind, amount, direction).
@@ -93,7 +93,7 @@ describe('TransactionsService.send', () => {
   it('marks failed and reverses the debit when broadcast throws', async () => {
     provider.sendTransaction.mockRejectedValue(new Error('insufficient funds for gas'));
 
-    await expect(service.send(dto)).rejects.toThrow(BadGatewayException);
+    await expect(service.send(dto, 'default')).rejects.toThrow(BadGatewayException);
 
     expect(m.update).toHaveBeenCalledWith(
       Transaction, 'tx-1', { status: 'failed' },
@@ -108,7 +108,7 @@ describe('TransactionsService.send', () => {
 
   it('rejects non-positive amounts before any ledger movement', async () => {
     for (const amount of ['0', '-5', 'abc', '']) {
-      await expect(service.send({ ...dto, amount })).rejects.toThrow(
+      await expect(service.send({ ...dto, amount }, 'default')).rejects.toThrow(
         /greater than zero|positive decimal/,
       );
     }
@@ -118,11 +118,11 @@ describe('TransactionsService.send', () => {
 
   it('rejects malformed destination addresses before the debit', async () => {
     await expect(
-      service.send({ ...dto, toAddress: 'not-an-address' }),
+      service.send({ ...dto, toAddress: 'not-an-address' }, 'default'),
     ).rejects.toThrow(/not a valid ETH address/);
     // Wrong chain's format must not pass either.
     await expect(
-      service.send({ ...dto, toAddress: 'mvw7cGjmWaSBFeQmGebZeVBVYx7h9pU2k' }),
+      service.send({ ...dto, toAddress: 'mvw7cGjmWaSBFeQmGebZeVBVYx7h9pU2k' }, 'default'),
     ).rejects.toThrow(/not a valid ETH address/);
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
@@ -131,10 +131,34 @@ describe('TransactionsService.send', () => {
     const prior = { id: 'tx-orig', txid: '0xreal' };
     txs.findOne.mockResolvedValue(prior);
 
-    const tx = await service.send({ ...dto, idempotencyKey: 'k-1' });
+    const tx = await service.send({ ...dto, idempotencyKey: 'k-1' }, 'default');
 
     expect(tx).toBe(prior);
     expect(ledger.postEntry).not.toHaveBeenCalled();
     expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('scopes the account lookup by tenant — foreign walletId finds nothing', async () => {
+    // The where clause carries both id and appId; with a foreign appId the
+    // DB returns nothing, so emulate that (the mock is otherwise honest
+    // regardless of the clause).
+    accounts.findOne.mockImplementation(({ where }: any) =>
+      where.wallet.appId === 'default' ? account : null,
+    );
+
+    await expect(service.send(dto, 'other-app')).rejects.toThrow(/No ETH account/);
+    expect(accounts.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { wallet: { id: 'w1', appId: 'other-app' }, chain: 'ETH' },
+      }),
+    );
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('get() 404s a transaction belonging to another app', async () => {
+    txs.findOne.mockResolvedValue({ id: 'tx-1', wallet: { id: 'w1', appId: 'acme' } });
+    await expect(service.get('tx-1', 'default')).rejects.toThrow(/not found/);
+    txs.findOne.mockResolvedValue({ id: 'tx-1', wallet: { id: 'w1', appId: 'default' } });
+    await expect(service.get('tx-1', 'default')).resolves.toBeDefined();
   });
 });

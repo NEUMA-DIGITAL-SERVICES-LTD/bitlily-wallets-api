@@ -1,12 +1,32 @@
 import { registerAs } from '@nestjs/config';
 
-export const serviceConfig = registerAs('service', () => ({
-  webhookRateLimitPerMinute: parseInt(process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE ?? '120', 10),
-  port: parseInt(process.env.PORT ?? '3100', 10),
-  env: process.env.NODE_ENV ?? 'development',
-  apiKeys: (process.env.SERVICE_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
-  adminApiKeys: (process.env.ADMIN_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
-}));
+export interface ApiClient {
+  /** Tenant slug stamped on wallets.app_id — 'default' is the legacy
+   *  SERVICE_API_KEYS bucket. */
+  slug: string;
+  name?: string;
+  apiKey: string;
+  /** This app's outbound webhook endpoint + HMAC secret. */
+  webhookUrl?: string;
+  webhookSecret?: string;
+}
+
+export const serviceConfig = registerAs('service', () => {
+  let clients: ApiClient[] = [];
+  try {
+    clients = process.env.API_CLIENTS ? JSON.parse(process.env.API_CLIENTS) : [];
+  } catch { clients = []; }
+  return {
+    webhookRateLimitPerMinute: parseInt(process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE ?? '120', 10),
+    port: parseInt(process.env.PORT ?? '3100', 10),
+    env: process.env.NODE_ENV ?? 'development',
+    apiKeys: (process.env.SERVICE_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
+    adminApiKeys: (process.env.ADMIN_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
+    /** Multi-tenant API clients. Each gets a key AND its own webhook
+     *  endpoint — app A's deposit events must never reach app B's server. */
+    clients: clients.filter((c) => c?.slug && c?.apiKey),
+  };
+});
 
 export const tatumConfig = registerAs('tatum', () => ({
   apiKey: process.env.TATUM_API_KEY ?? '',
