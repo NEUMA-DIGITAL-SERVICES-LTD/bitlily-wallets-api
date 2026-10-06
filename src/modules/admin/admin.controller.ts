@@ -1,14 +1,70 @@
-import { Body, Controller, Get, Param, Post, BadRequestException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, BadRequestException, NotFoundException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { IsBoolean, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsBoolean, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { TransactionsService } from '../transactions/transactions.service';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
-import { ApiClient } from '../../config/configuration';
+import { ClientsService } from '../../common/clients.service';
+
+class CreateClientDto {
+  @ApiProperty({ description: 'Tenant slug — stamped on wallets.app_id' })
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^[a-z0-9-]+$/, { message: 'slug must be lowercase letters, digits, hyphens' })
+  slug: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiPropertyOptional({ description: 'Where this app receives webhook events' })
+  @IsString()
+  @IsOptional()
+  webhookUrl?: string;
+
+  @ApiPropertyOptional({
+    description: '["wallet"] = full tenant access; ["read"] = shared endpoints only',
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  scopes?: string[];
+}
+
+class UpdateClientDto {
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  name?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  webhookUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  scopes?: string[];
+
+  @ApiPropertyOptional({ description: 'false suspends the key without deleting history' })
+  @IsBoolean()
+  @IsOptional()
+  active?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'true regenerates apiKey + webhookSecret — return them once, old key dies',
+  })
+  @IsBoolean()
+  @IsOptional()
+  rotate?: boolean;
+}
 
 class EnrollCustodyDto {
   @ApiProperty({ description: 'Chain code, e.g. BTC, ETH, SOL' })
@@ -66,6 +122,7 @@ export class AdminController {
     private readonly custody: Repository<CustodyAccount>,
     private readonly transactions: TransactionsService,
     private readonly config: ConfigService,
+    private readonly clients: ClientsService,
   ) {}
 
   @Post('custody')
@@ -115,13 +172,44 @@ export class AdminController {
       'List registered API clients (tenants) — slug, name, webhook URL ' +
       'presence. Keys never leave this endpoint.',
   })
-  clients() {
-    return (this.config.get<ApiClient[]>('service.clients') ?? []).map((c) => ({
-      slug: c.slug,
-      name: c.name ?? null,
-      keyTail: `…${c.apiKey.slice(-4)}`,
-      webhookConfigured: !!c.webhookUrl,
-    }));
+  listClients() {
+    return this.clients.list();
+  }
+
+  @Post('clients')
+  @ApiOperation({
+    summary:
+      'Register a new API client (tenant). Returns apiKey + webhookSecret ' +
+      'ONCE — they are not retrievable afterwards.',
+  })
+  async createClient(@Body() dto: CreateClientDto) {
+    const row = await this.clients.create(dto);
+    return {
+      slug: row.slug,
+      name: row.name,
+      apiKey: row.apiKey,
+      webhookSecret: row.webhookSecret,
+      scopes: row.scopes,
+    };
+  }
+
+  @Patch('clients/:slug')
+  @ApiOperation({
+    summary:
+      'Update a client — webhookUrl, scopes, active, or rotate:true to ' +
+      'regenerate credentials (old key dies immediately)',
+  })
+  async updateClient(@Param('slug') slug: string, @Body() dto: UpdateClientDto) {
+    const row = await this.clients.update(slug, dto, dto.rotate === true);
+    if (!row) throw new NotFoundException(`Client ${slug} not found`);
+    return {
+      slug: row.slug,
+      name: row.name,
+      apiKey: row.apiKey,
+      webhookSecret: row.webhookSecret,
+      scopes: row.scopes,
+      active: row.active,
+    };
   }
 
   @Post('withdrawals/:id/approve')

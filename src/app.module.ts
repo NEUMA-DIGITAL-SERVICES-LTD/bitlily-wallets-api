@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { ApiKeyGuard, Public } from './common/api-key.guard';
+import { ClientsModule } from './common/clients.module';
 import {
   confirmationsConfig,
   detectionConfig,
@@ -91,6 +92,7 @@ class HealthController {
       }),
     }),
     ScheduleModule.forRoot(),
+    ClientsModule,
     ProvidersModule,
     LedgerModule,
     WalletsModule,

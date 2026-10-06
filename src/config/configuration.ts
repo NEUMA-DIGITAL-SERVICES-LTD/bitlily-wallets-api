@@ -1,6 +1,6 @@
 import { registerAs } from '@nestjs/config';
 
-export interface ApiClient {
+export interface ApiClientConfig {
   /** Tenant slug stamped on wallets.app_id — 'default' is the legacy
    *  SERVICE_API_KEYS bucket. */
   slug: string;
@@ -12,7 +12,7 @@ export interface ApiClient {
 }
 
 export const serviceConfig = registerAs('service', () => {
-  let clients: ApiClient[] = [];
+  let clients: ApiClientConfig[] = [];
   try {
     clients = process.env.API_CLIENTS ? JSON.parse(process.env.API_CLIENTS) : [];
   } catch { clients = []; }

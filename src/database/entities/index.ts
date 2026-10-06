@@ -6,6 +6,7 @@ export { LedgerEntry } from './ledger-entry.entity';
 export { WebhookEvent } from './webhook-event.entity';
 export { OutboundEvent } from './outbound-event.entity';
 export { CustodyAccount } from './custody-account.entity';
+export { ApiClient } from './api-client.entity';
 
 import { Wallet } from './wallet.entity';
 import { WalletAccount } from './wallet-account.entity';
@@ -15,6 +16,7 @@ import { LedgerEntry } from './ledger-entry.entity';
 import { WebhookEvent } from './webhook-event.entity';
 import { OutboundEvent } from './outbound-event.entity';
 import { CustodyAccount } from './custody-account.entity';
+import { ApiClient } from './api-client.entity';
 
 export const ALL_ENTITIES = [
   Wallet,
@@ -25,4 +27,5 @@ export const ALL_ENTITIES = [
   WebhookEvent,
   OutboundEvent,
   CustodyAccount,
+  ApiClient,
 ];

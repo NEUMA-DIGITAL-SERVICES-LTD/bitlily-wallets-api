@@ -2,9 +2,11 @@ import { Body, Controller, Get, Param, Post, Req } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto, GenerateAddressDto, WatchAddressDto } from './wallets.dto';
+import { RequireScope } from '../../common/api-key.guard';
 
 @ApiTags('wallets')
 @ApiSecurity('x-api-key')
+@RequireScope('wallet')
 @Controller('api/v1/wallets')
 export class WalletsController {
   constructor(private readonly wallets: WalletsService) {}

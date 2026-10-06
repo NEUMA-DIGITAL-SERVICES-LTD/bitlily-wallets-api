@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
 import { EstimateFeeQueryDto, SendTransactionDto } from './transactions.dto';
+import { RequireScope } from '../../common/api-key.guard';
 
 @ApiTags('transactions')
 @ApiSecurity('x-api-key')
@@ -9,6 +10,7 @@ import { EstimateFeeQueryDto, SendTransactionDto } from './transactions.dto';
 export class TransactionsController {
   constructor(private readonly txs: TransactionsService) {}
 
+  @RequireScope('wallet')
   @Post('transactions')
   @ApiOperation({ summary: 'Send a blockchain transaction (withdrawal)' })
   send(
@@ -22,6 +24,7 @@ export class TransactionsController {
     return this.txs.send(dto, req.appId);
   }
 
+  @RequireScope('wallet')
   @Get('transactions/:id')
   @ApiOperation({ summary: 'Get transaction status' })
   get(@Param('id') id: string, @Req() req: any) {

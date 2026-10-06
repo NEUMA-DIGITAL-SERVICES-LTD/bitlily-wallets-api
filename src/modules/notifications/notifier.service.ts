@@ -8,16 +8,11 @@ import { LessThanOrEqual, Repository } from 'typeorm';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { OutboundEvent } from '../../database/entities/outbound-event.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
-import { ApiClient } from '../../config/configuration';
+import { ClientsService, WebhookRoute } from '../../common/clients.service';
 import { errMsg } from '../../common/errors';
 
 /** ~4h of exponential retries (1,2,4,8…128 min) before dead-lettering. */
 const MAX_ATTEMPTS = 8;
-
-interface Route {
-  url: string;
-  secret: string;
-}
 
 /**
  * Outbound notifier — transactional outbox for events owed to an
@@ -44,6 +39,7 @@ export class NotifierService {
     private readonly outbox: Repository<OutboundEvent>,
     @InjectRepository(Wallet)
     private readonly wallets: Repository<Wallet>,
+    private readonly clients: ClientsService,
   ) {}
 
   /** Persist the event, then attempt immediate delivery. */
@@ -104,7 +100,7 @@ export class NotifierService {
         payload,
       }),
     );
-    if (!this.routeFor(row.appId).url) {
+    if (!(await this.routeFor(row.appId)).url) {
       // No consumer configured (local dev) — leave pending; the sweep would
       // burn attempts pointlessly. Mark sent so the outbox stays clean.
       await this.outbox.update(row.id, { status: 'sent', sentAt: new Date() });
@@ -124,17 +120,12 @@ export class NotifierService {
     for (const row of due) await this.deliver(row);
   }
 
-  private routeFor(appId: string | null | undefined): Route {
-    const client = (this.config.get<ApiClient[]>('service.clients') ?? [])
-      .find((c) => c.slug === appId);
-    return {
-      url: client?.webhookUrl ?? this.config.get('webhook.mainAppUrl') ?? '',
-      secret: client?.webhookSecret ?? this.config.get('webhook.signingSecret') ?? '',
-    };
+  private routeFor(appId: string | null | undefined): Promise<WebhookRoute> {
+    return this.clients.routeFor(appId);
   }
 
   private async deliver(row: OutboundEvent): Promise<void> {
-    const { url, secret } = this.routeFor(row.appId);
+    const { url, secret } = await this.routeFor(row.appId);
     if (!url) return;
     const raw = JSON.stringify(row.payload);
     const signature = createHmac('sha256', secret).update(raw).digest('hex');

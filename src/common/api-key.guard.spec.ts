@@ -1,48 +1,66 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { ApiKeyGuard } from './api-key.guard';
 
 /**
  * Tenant boundary: the API key isn't just auth — it's identity. The guard
  * must resolve a key to the owning app slug or reject; a key that maps to
- * nothing must never reach a wallet.
+ * nothing must never reach a wallet. Scope checks keep read-only keys off
+ * money-moving routes.
  */
 describe('ApiKeyGuard tenancy', () => {
-  const config: any = {
-    get: (k: string) =>
-      k === 'service.clients'
-        ? [{ slug: 'acme', apiKey: 'acme-key-1234', webhookUrl: 'https://acme.example/hook' }]
-        : k === 'service.apiKeys'
-          ? ['legacy-key-1']
-          : undefined,
+  const clients: any = {
+    resolve: async (key: string) =>
+      key === 'acme-key-1234'
+        ? { appId: 'acme', scopes: ['wallet'] }
+        : key === 'read-key'
+          ? { appId: 'readonly-feed', scopes: ['read'] }
+          : key === 'legacy-key-1'
+            ? { appId: 'default', scopes: ['wallet'] }
+            : null,
   };
-  const reflector: any = { getAllAndOverride: () => false };
-  const guard = new ApiKeyGuard(config, reflector);
+  const config: any = { get: () => undefined };
+  const reflector: any = {
+    getAllAndOverride: (key: string) =>
+      key === 'requiredScope' ? reflector.requiredScope : undefined,
+    requiredScope: undefined as string | undefined,
+  };
+  const guard = new ApiKeyGuard(config, reflector, clients);
 
   const ctxFor = (key?: string) => {
     const req: any = { headers: key ? { 'x-api-key': key } : {} };
     return { req, ctx: { switchToHttp: () => ({ getRequest: () => req }), getHandler: () => null, getClass: () => null } as any };
   };
 
-  it('resolves an API_CLIENTS key to its slug', () => {
+  it('resolves a tenant key to its slug', async () => {
     const { req, ctx } = ctxFor('acme-key-1234');
-    expect(guard.canActivate(ctx)).toBe(true);
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(req.appId).toBe('acme');
   });
 
-  it('maps legacy SERVICE_API_KEYS to the default tenant', () => {
+  it('maps legacy keys to the default tenant', async () => {
     const { req, ctx } = ctxFor('legacy-key-1');
-    expect(guard.canActivate(ctx)).toBe(true);
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(req.appId).toBe('default');
   });
 
-  it('rejects unknown keys and never attaches an appId', () => {
+  it('rejects unknown keys and never attaches an appId', async () => {
     const { req, ctx } = ctxFor('wrong-key');
-    expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
     expect(req.appId).toBeUndefined();
   });
 
-  it('rejects a missing header', () => {
+  it('rejects a missing header', async () => {
     const { ctx } = ctxFor(undefined);
-    expect(() => guard.canActivate(ctx)).toThrow(UnauthorizedException);
+    await expect(guard.canActivate(ctx)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it('a read-scoped key passes general routes but is 403d on wallet routes', async () => {
+    reflector.requiredScope = undefined;
+    const general = ctxFor('read-key');
+    await expect(guard.canActivate(general.ctx)).resolves.toBe(true);
+
+    reflector.requiredScope = 'wallet';
+    const wallet = ctxFor('read-key');
+    await expect(guard.canActivate(wallet.ctx)).rejects.toThrow(ForbiddenException);
   });
 });
