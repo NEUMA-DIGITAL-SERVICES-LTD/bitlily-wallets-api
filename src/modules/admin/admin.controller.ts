@@ -9,6 +9,9 @@ import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { TransactionsService } from '../transactions/transactions.service';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
 import { ClientsService } from '../../common/clients.service';
+import { addressPayload } from '../../common/address-payload';
+import { Inject } from '@nestjs/common';
+import { BLOCKCHAIN_PROVIDER, BlockchainProvider } from '../../providers/provider.interface';
 
 class CreateClientDto {
   @ApiProperty({ description: 'Tenant slug — stamped on wallets.app_id' })
@@ -87,6 +90,18 @@ class EnrollCustodyDto {
   @IsNotEmpty()
   signatureId: string;
 
+  @ApiProperty({
+    description:
+      'Pair proof — output of `tatum-kms getaddress {signatureId} 0` on ' +
+      'the KMS host. Verified against the index-0 address derived from ' +
+      'the submitted xpub/baseAddress: a signatureId belonging to a ' +
+      'different wallet is REFUSED, because it would silently sign ' +
+      'deposits it cannot spend (enroll looks fine, withdrawals break).',
+  })
+  @IsString()
+  @IsNotEmpty()
+  kmsAddress: string;
+
   @ApiPropertyOptional({
     description: 'Sweep destination — defaults to the custody wallet index-0 address',
   })
@@ -124,17 +139,47 @@ export class AdminController {
     private readonly transactions: TransactionsService,
     private readonly config: ConfigService,
     private readonly clients: ClientsService,
+    @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
   ) {}
 
   @Post('custody')
   @ApiOperation({
-    summary: 'Enroll a KMS-managed wallet for a chain (xpub + signatureId)',
+    summary:
+      'Enroll a KMS-managed wallet for a chain (xpub + signatureId + ' +
+      'kmsAddress pair proof from `tatum-kms getaddress {signatureId} 0`)',
   })
   async enroll(@Body() dto: EnrollCustodyDto) {
     if (!dto.xpub && !dto.baseAddress) {
       throw new BadRequestException('xpub or baseAddress required');
     }
     const chain = dto.chain.toUpperCase();
+
+    // Pair proof: the signatureId must derive the SAME index-0 address as
+    // the enrolled xpub/baseAddress. Without this, a mismatched pair
+    // enrolls cleanly — deposits keep deriving from xpub A while
+    // withdrawals sign with wallet B's keys, so every send fails at
+    // broadcast and deposited funds are stranded. Verification is a
+    // payload-hash compare, so KMS's mainnet-serialized `getaddress`
+    // output (bc1…/L…) still matches our testnet-derived address.
+    const expected = dto.xpub
+      ? await this.provider.generateDepositAddress(
+          { chain: chain as any, xpub: dto.xpub },
+          0,
+        )
+      : dto.baseAddress!;
+    const given = addressPayload(chain, dto.kmsAddress);
+    const want = addressPayload(chain, expected);
+    if (!given || !want || given !== want) {
+      throw new BadRequestException(
+        `Custody pair proof failed for ${chain}: ` +
+        `signatureId ${dto.signatureId} derives "${dto.kmsAddress}" ` +
+        `(getaddress index 0) but the submitted ${dto.xpub ? 'xpub' : 'baseAddress'} ` +
+        `derives "${expected}". They belong to different wallets — refusing ` +
+        `to enroll. Run 'tatum-kms getaddress ${dto.signatureId} 0' on the ` +
+        `KMS host and pass its output as kmsAddress.`,
+      );
+    }
+
     const existing = await this.custody.findOne({ where: { chain } });
     if (existing) {
       if (existing.secretRef !== dto.signatureId && !dto.rotate) {

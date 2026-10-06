@@ -42,11 +42,27 @@ docker run -it --env-file .env -v $HOME/.tatumrc:/home/node/.tatumrc \
 ```
 
 Each `generatemanagedwallet` prints `{signatureId, xpub}` — register via
-`POST /api/v1/admin/custody` (admin key required):
+`POST /api/v1/admin/custody` (admin key required). Enrollment REQUIRES a
+pair proof: the signatureId's index-0 address from the KMS host:
+
+```bash
+docker exec bitlily-kms node /opt/app/dist/index.js getaddress <signatureId> 0
+# → { "address": "bc1q…" }   (mainnet serialization is expected — see note)
+```
 
 ```json
-{ "chain": "BTC", "xpub": "xpub...", "signatureId": "…", "treasuryAddress": "…" }
+{ "chain": "BTC", "xpub": "xpub...", "signatureId": "…",
+  "kmsAddress": "bc1q…", "treasuryAddress": "…" }
 ```
+
+The service derives index 0 from the submitted xpub (or compares
+`baseAddress` directly for SOL) and reduces both to the key payload —
+bech32 witness program / hash160 / raw pubkey — so KMS's mainnet-serialized
+output (`bc1…`, `L…`) still matches testnet-derived forms (`tb1…`, `m…`).
+A signatureId from a different wallet is REFUSED: without the check, the
+pair enrolls cleanly, deposits keep deriving from xpub A, and every
+withdrawal fails at broadcast because wallet B's keys can't spend them —
+the "silent break" this proof exists to prevent.
 
 ## 4. Run the daemon (four-eye is mandatory on mainnet)
 
