@@ -48,6 +48,7 @@ async function bootstrap() {
     )
     .setVersion('0.1.0')
     .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, 'x-api-key')
+    .addApiKey({ type: 'apiKey', name: 'X-Admin-Key', in: 'header' }, 'x-admin-key')
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, docs));
 

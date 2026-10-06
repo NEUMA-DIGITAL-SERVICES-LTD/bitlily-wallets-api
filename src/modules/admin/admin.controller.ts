@@ -113,7 +113,8 @@ class EnrollCustodyDto {
  * without a row.
  */
 @ApiTags('admin')
-@ApiSecurity('x-api-key')
+// One requirement object = AND: admin routes need both headers, not either.
+@ApiSecurity({ 'x-api-key': [], 'x-admin-key': [] })
 @UseGuards(AdminKeyGuard)
 @Controller('api/v1/admin')
 export class AdminController {
