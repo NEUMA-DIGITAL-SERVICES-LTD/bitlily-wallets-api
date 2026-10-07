@@ -27,6 +27,7 @@ import { errMsg } from '../../common/errors';
  * propagation can lag.
  */
 const FAIL_AFTER_MS = 60 * 60 * 1000;
+const KMS_STALL_MS = 10 * 60 * 1000;
 
 @Injectable()
 export class OutboundStatusService {
@@ -95,11 +96,12 @@ export class OutboundStatusService {
               `KMS request ${kmsRequestId} for tx ${tx.id} ` +
               `${sig === null ? 'not found' : 'rejected'} — debit reversed`,
             );
+            return;
           }
           if (!tx.txid.startsWith('pending:')) {
             return this.refresh(tx); // got real txid — continue lifecycle
           }
-          return; // still awaiting signature
+          return this.flagStalledSignature(tx, kmsRequestId);
         } catch (e) {
           this.logger.warn(`KMS status check failed for tx ${tx.id}: ${errMsg(e)}`);
           return;
@@ -163,6 +165,29 @@ export class OutboundStatusService {
     } catch (e) {
       this.logger.warn(`Outbound refresh failed for tx ${tx.id}: ${errMsg(e)}`);
     }
+  }
+
+  /**
+   * A KMS request still 'pending' past the stall window means the signing
+   * daemon is down or the request expired chain-side (TRON serialized
+   * payloads die after ~1 minute — a daemon outage longer than that
+   * silently orphans them). Not auto-failed: the request may still be
+   * signable — this raises an ops alert, once.
+   */
+  private async flagStalledSignature(
+    tx: Transaction,
+    kmsRequestId: string,
+  ): Promise<void> {
+    if (Date.now() - tx.createdAt.getTime() <= KMS_STALL_MS) return;
+    if ((tx.raw as any)?.kmsStallAlerted === true) return;
+    tx.raw = { ...(tx.raw ?? {}), kmsStallAlerted: true };
+    await this.txs.save(tx);
+    await this.notifier.notify('withdrawal.reconcile_required', tx);
+    this.logger.error(
+      `tx ${tx.id} awaiting KMS signature >${KMS_STALL_MS / 60000}m ` +
+      `(request ${kmsRequestId}) — signing daemon down or request expired. ` +
+      `Check the tatum-kms container and Tatum's pending queue.`,
+    );
   }
 
   private requiredConfirmations(chain: string): number {

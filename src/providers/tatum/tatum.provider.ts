@@ -677,6 +677,9 @@ export class TatumProvider implements BlockchainProvider {
       return { status: 'failed' };
     } catch (err: any) {
       if (err.response?.status === 404) return null;
+      // Tatum answers absent/deleted signing requests with 403+kms.missing —
+      // same meaning as 404: the request is gone and can never be signed.
+      if (err.response?.data?.errorCode === 'kms.missing') return null;
       throw err;
     }
   }

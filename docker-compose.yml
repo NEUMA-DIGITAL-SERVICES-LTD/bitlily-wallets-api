@@ -28,5 +28,17 @@ services:
     ports:
       - "3100:3100"
 
+  kms:
+    image: tatumio/tatum-kms
+    container_name: bitlily-kms
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: daemon --externalUrl=http://api:3100/api/v1/kms/verify/${KMS_VERIFY_TOKEN} --chain=BTC,LTC,ETH,MATIC,TRON,SOL --period=10
+    volumes:
+      - ${KMS_WALLET_FILE}:/home/node/.tatumrc
+    depends_on:
+      - api
+
 volumes:
   pgdata:

@@ -128,6 +128,48 @@ describe('OutboundStatusService', () => {
     expect(txs.save).not.toHaveBeenCalled();
   });
 
+  it('alerts once when a KMS request stays unsigned past the stall window', async () => {
+    const stalledTx = {
+      ...baseTx,
+      txid: 'pending:abc',
+      raw: { kmsRequestId: 'kms-1' },
+      createdAt: new Date(Date.now() - 11 * 60 * 1000),
+    };
+    queue(stalledTx);
+    provider.getPendingSignature.mockResolvedValue({ status: 'pending' });
+
+    await service.sweep();
+
+    expect(ledger.postEntry).not.toHaveBeenCalled(); // no reversal — may still sign
+    expect(notifier.notify).toHaveBeenCalledWith(
+      'withdrawal.reconcile_required', stalledTx,
+    );
+    expect(txs.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        raw: expect.objectContaining({ kmsStallAlerted: true }),
+      }),
+    );
+
+    notifier.notify.mockClear();
+    txs.save.mockClear();
+    await service.sweep();
+    expect(notifier.notify).not.toHaveBeenCalled(); // deduped
+  });
+
+  it('does not flag a fresh KMS request as stalled', async () => {
+    queue({
+      ...baseTx,
+      txid: 'pending:abc',
+      raw: { kmsRequestId: 'kms-1' },
+    });
+    provider.getPendingSignature.mockResolvedValue({ status: 'pending' });
+
+    await service.sweep();
+
+    expect(notifier.notify).not.toHaveBeenCalled();
+    expect(txs.save).not.toHaveBeenCalled();
+  });
+
   it('alerts once on a stale placeholder txid (crash between debit and broadcast)', async () => {
     const staleTx = {
       ...baseTx,
