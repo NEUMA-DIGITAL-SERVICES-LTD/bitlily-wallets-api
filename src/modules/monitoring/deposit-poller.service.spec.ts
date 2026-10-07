@@ -24,6 +24,7 @@ describe('DepositPollerService', () => {
   let service: DepositPollerService;
   let addresses: any;
   let txs: any;
+  let custody: any;
   let em: any;
   let m: any; // transactional EntityManager
   let provider: any;
@@ -48,6 +49,7 @@ describe('DepositPollerService', () => {
         getCount: jest.fn().mockResolvedValue(0),
       })),
     };
+    custody = { find: jest.fn().mockResolvedValue([]) };
     txs = {
       find: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
@@ -75,7 +77,7 @@ describe('DepositPollerService', () => {
       ),
     };
     service = new DepositPollerService(
-      addresses, txs, em, provider, ledger, notifier, config,
+      addresses, txs, custody, em, provider, ledger, notifier, config,
     );
   };
 
@@ -255,6 +257,24 @@ describe('DepositPollerService', () => {
 
     // Skipped before even the balance call — ambiguous addresses cost
     // no provider credits and produce no credit, no tx, no event.
+    expect(provider.getAddressBalance).not.toHaveBeenCalled();
+    expect(em.transaction).not.toHaveBeenCalled();
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('never credits a watch row pointing at a custody treasury/base address', async () => {
+    // A wallet account that resolved to the treasury address would turn
+    // every ops refill/sweep into a phantom user deposit — and custody
+    // outflows would rebaseline the user downward. Skip before the
+    // provider call: treasury inflows are never user deposits.
+    custody.find.mockResolvedValue([
+      { chain: 'BTC', treasuryAddress: 'addr-1', baseAddress: null },
+    ]);
+    provider.getAddressBalance.mockResolvedValue('0.5');
+
+    await service.poll();
+
     expect(provider.getAddressBalance).not.toHaveBeenCalled();
     expect(em.transaction).not.toHaveBeenCalled();
     expect(ledger.postEntry).not.toHaveBeenCalled();

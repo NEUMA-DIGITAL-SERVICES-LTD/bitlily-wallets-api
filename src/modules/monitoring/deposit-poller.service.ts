@@ -4,6 +4,7 @@ import { InjectEntityManager, InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
 import { EntityManager, Repository, IsNull, MoreThan, Or } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
+import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { AssetDef, getAsset } from '../../config/assets';
 import {
@@ -35,12 +36,16 @@ export class DepositPollerService {
   private running = false;
   /** (address, asset) pairs already warn-logged as shared/unattributable. */
   private readonly sharedWarned = new Set<string>();
+  /** Watch rows pointing at custody treasury/base addresses — warn once. */
+  private readonly custodyWarned = new Set<string>();
 
   constructor(
     @InjectRepository(DepositAddress)
     private readonly addresses: Repository<DepositAddress>,
     @InjectRepository(Transaction)
     private readonly txs: Repository<Transaction>,
+    @InjectRepository(CustodyAccount)
+    private readonly custody: Repository<CustodyAccount>,
     @InjectEntityManager() private readonly em: EntityManager,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
     private readonly ledger: LedgerService,
@@ -62,15 +67,40 @@ export class DepositPollerService {
         relations: ['account', 'account.wallet'],
         take: 500,
       });
-      for (const dep of active) await this.checkAddress(dep);
+      const custodyRows = await this.custody.find();
+      const custodyAddrs = new Set(
+        custodyRows.flatMap((c) =>
+          [c.treasuryAddress, c.baseAddress].filter(Boolean) as string[],
+        ),
+      );
+      for (const dep of active) await this.checkAddress(dep, custodyAddrs);
     } finally {
       this.running = false;
     }
   }
 
-  private async checkAddress(dep: DepositAddress): Promise<void> {
+  private async checkAddress(
+    dep: DepositAddress,
+    custodyAddrs: Set<string> = new Set(),
+  ): Promise<void> {
     const asset = getAsset(dep.asset);
     if (!asset) return;
+
+    // A watch row that points AT the custody treasury/base address is not a
+    // user deposit — inflows there are refills, sweeps, or stray sends.
+    // Crediting them to whichever wallet's account resolved to that address
+    // turns every ops refill into a phantom user balance. Skip loudly.
+    if (custodyAddrs.has(dep.address)) {
+      const key = `${dep.address}:${dep.asset}`;
+      if (!this.custodyWarned.has(key)) {
+        this.custodyWarned.add(key);
+        this.logger.warn(
+          `${dep.address} ${dep.asset} resolves to a custody treasury/base ` +
+          `address — skipping auto-credit; treasury inflows are not user deposits`,
+        );
+      }
+      return;
+    }
 
     // Shared custody addresses (SOL's single enrolled baseAddress, any
     // future account-model chain without per-wallet derivation) hold one
