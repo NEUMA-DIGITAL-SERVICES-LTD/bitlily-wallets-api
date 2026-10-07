@@ -114,7 +114,15 @@ export class TatumProvider implements BlockchainProvider {
       (err) => {
         const status = err.response?.status;
         const body = JSON.stringify(err.response?.data ?? {}).slice(0, 500);
-        this.logger.error(`Tatum ${status} on ${err.config?.url}: ${body}`);
+        // Expected-absence errorCodes are handled by callers (unactivated
+        // TRON account = zero balance; missing tx = reorg probe) — ERROR
+        // level here would page ops for a routine state.
+        const code = String(err.response?.data?.errorCode ?? '');
+        const expected = code.endsWith('account.not.found') || code.endsWith('tx.not.found');
+        (expected ? this.logger.debug : this.logger.error).call(
+          this.logger,
+          `Tatum ${status} on ${err.config?.url}: ${body}`,
+        );
         throw err;
       },
     );
@@ -155,7 +163,7 @@ export class TatumProvider implements BlockchainProvider {
       // Token endpoints return RAW base units (e.g. 20 USDC → "20000000"
       // at 6 decimals) — normalize by 10^decimals or deposits credit 10^6x.
       if (asset.chain === 'TRON') {
-        const { data } = await this.http.get(`/v3/tron/account/${address}`);
+        const data = await this.tronAccount(address);
         const trc20 = (data?.trc20 ?? []) as Record<string, string>[];
         const hit = trc20.find((t) => t[asset.contract ?? '']);
         return hit ? fromRaw(String(hit[asset.contract ?? '']), asset.decimals) : '0';
@@ -186,11 +194,27 @@ export class TatumProvider implements BlockchainProvider {
     if (asset.chain === 'TRON') {
       // TRON's native balance lives on the account object (sun units),
       // not the /account/balance path — that route 404s.
-      const { data } = await this.http.get(`/v3/tron/account/${address}`);
-      return String(Number(data.balance ?? 0) / 1e6);
+      const data = await this.tronAccount(address);
+      return String(Number(data?.balance ?? 0) / 1e6);
     }
     const { data } = await this.http.get(`/v3/${path}/account/balance/${address}`);
     return String(data.balance ?? data ?? '0');
+  }
+
+  /**
+   * TRON accounts don't exist on-chain until activated by an inbound tx —
+   * Tatum 403s `tron.account.not.found` for fresh deposit addresses.
+   * Null = zero balance (correct semantics: nothing has arrived); only
+   * that specific errorCode is mapped — real auth/quota failures throw.
+   */
+  private async tronAccount(address: string): Promise<any | null> {
+    try {
+      const { data } = await this.http.get(`/v3/tron/account/${address}`);
+      return data;
+    } catch (e: any) {
+      if (e?.response?.data?.errorCode === 'tron.account.not.found') return null;
+      throw e;
+    }
   }
 
   async getTransaction(txid: string, chain: Chain, asset?: AssetDef): Promise<ProviderTx | null> {
@@ -199,7 +223,15 @@ export class TatumProvider implements BlockchainProvider {
       const { data } = await this.http.get(`/v3/${path}/transaction/${txid}`);
       return this.normalizeTx(data, txid, chain, asset);
     } catch (err: any) {
-      if (err.response?.status === 404) return null;
+      // Tatum signals a missing tx as 403 + '{chain}.tx.not.found', NOT
+      // 404 (verified live on polygon). Mapping it to null matters: the
+      // reorg guard treats throw = "provider unreachable, keep credit"
+      // but null = "tx gone, reverse it" — without this, a vanished
+      // deposit is never detected.
+      if (
+        err.response?.status === 404 ||
+        String(err.response?.data?.errorCode ?? '').endsWith('tx.not.found')
+      ) return null;
       throw err;
     }
   }

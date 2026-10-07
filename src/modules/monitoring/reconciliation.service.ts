@@ -5,7 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { EntityManager, Repository } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
-import { enabledAssets } from '../../config/assets';
+import { enabledAssets, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
@@ -52,7 +52,13 @@ export class ReconciliationService {
     if (this.running) return;
     this.running = true;
     try {
-      for (const asset of enabledAssets()) {
+      for (const a of enabledAssets()) {
+        // Resolve through getAsset — the testnet contract swap lives there.
+        // Raw registry entries carry MAINNET contracts; querying them on
+        // testnet RPCs 403s every cycle (verified live: erc20.get.error
+        // storms on USDC_MATIC/USDT_MATIC/USDC_SOL).
+        const asset = getAsset(a.code);
+        if (!asset) continue;
         try {
           await this.reconcileAsset(asset);
         } catch (e) {
@@ -79,7 +85,8 @@ export class ReconciliationService {
       const nativeCode = acct.chain === 'POLYGON' ? 'POL' : acct.chain;
       const floor = floors[acct.chain];
       if (!treasury || floor == null) continue;
-      const asset = enabledAssets().find((a) => a.code === nativeCode && a.type === 'native');
+      const asset = getAsset(nativeCode);
+      if (asset?.type !== 'native') continue;
       if (!asset) continue;
       let bal: number;
       try {

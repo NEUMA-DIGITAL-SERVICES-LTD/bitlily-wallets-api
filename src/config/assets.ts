@@ -74,6 +74,11 @@ export function getAsset(code: string): AssetDef | undefined {
     if (!only.includes(a.code)) return undefined;
   }
   if (a.type === 'token' && (process.env.TATUM_NETWORK ?? 'testnet') !== 'mainnet') {
+    // A token without a testnet deployment is unservable — returning the
+    // def with contract:undefined produced a literal "undefined" contract
+    // in provider URLs (error-storm loop) or worse, silent-zero balances
+    // (TRC20 key lookup misses). Unsupported is the honest answer.
+    if (!a.testnetContract) return undefined;
     return { ...a, contract: a.testnetContract };
   }
   return a;
