@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
@@ -9,8 +10,15 @@ import { makeRateLimiter } from './common/rate-limit';
 import { requestId } from './common/request-id';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bodyParser: false });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
   const config = app.get(ConfigService);
+
+  // req.ip honesty: TRUST_PROXY_HOPS must equal the number of trusted proxy
+  // hops (1 behind nginx/ALB, 0 direct). With 0, req.ip is the socket peer —
+  // unspoofable. Setting it too HIGH lets callers spoof X-Forwarded-For and
+  // defeat per-client IP allowlists — keep it at the true hop count.
+  const trustProxyHops = parseInt(process.env.TRUST_PROXY_HOPS ?? '0', 10);
+  if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
 
   app.use(requestId);
 

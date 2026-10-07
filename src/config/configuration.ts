@@ -9,6 +9,8 @@ export interface ApiClientConfig {
   /** This app's outbound webhook endpoint + HMAC secret. */
   webhookUrl?: string;
   webhookSecret?: string;
+  /** CIDRs/IPs this key may be used from. Absent = unrestricted. */
+  allowedIps?: string[];
 }
 
 export const serviceConfig = registerAs('service', () => {
@@ -22,6 +24,9 @@ export const serviceConfig = registerAs('service', () => {
     env: process.env.NODE_ENV ?? 'development',
     apiKeys: (process.env.SERVICE_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
     adminApiKeys: (process.env.ADMIN_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
+    /** Optional CIDR list for X-Admin-Key callers — the key that mints
+     *  spend-capable credentials should only work from ops egress. */
+    adminAllowedIps: (process.env.ADMIN_ALLOWED_IPS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
     /** Multi-tenant API clients. Each gets a key AND its own webhook
      *  endpoint — app A's deposit events must never reach app B's server. */
     clients: clients.filter((c) => c?.slug && c?.apiKey),

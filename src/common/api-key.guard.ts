@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { SetMetadata } from '@nestjs/common';
 import { ClientsService } from './clients.service';
+import { ipAllowed } from './ip-match';
 
 /** Marks routes that skip API-key auth (webhook ingress, health). */
 export const IS_PUBLIC = 'isPublic';
@@ -47,6 +48,12 @@ export class ApiKeyGuard implements CanActivate {
     const resolved = await this.clients.resolve(key);
     if (!resolved) {
       throw new UnauthorizedException('Invalid or missing X-API-Key');
+    }
+    // Per-tenant IP allowlist — a leaked key is dead outside the tenant's
+    // egress. req.ip is only honest if TRUST_PROXY_HOPS matches the real
+    // ingress hops (unset = socket peer = unspoofable but proxy-blind).
+    if (resolved.allowedIps?.length && !ipAllowed(req.ip, resolved.allowedIps)) {
+      throw new ForbiddenException('X-API-Key not allowed from this IP');
     }
     req.appId = resolved.appId;
     req.clientScopes = resolved.scopes;

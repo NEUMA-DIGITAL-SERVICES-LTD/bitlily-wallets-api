@@ -37,6 +37,16 @@ class CreateClientDto {
   @IsString({ each: true })
   @IsOptional()
   scopes?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'CIDRs/IPs this key may be used from, e.g. ["203.0.113.0/24"]. ' +
+      'Omit/empty = unrestricted. A leaked key is dead outside this list.',
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  allowedIps?: string[];
 }
 
 class UpdateClientDto {
@@ -55,6 +65,16 @@ class UpdateClientDto {
   @IsString({ each: true })
   @IsOptional()
   scopes?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'CIDRs/IPs this key may be used from. [] clears the restriction. ' +
+      'Omitted = leave unchanged.',
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  allowedIps?: string[];
 
   @ApiPropertyOptional({ description: 'false suspends the key without deleting history' })
   @IsBoolean()
@@ -236,6 +256,7 @@ export class AdminController {
       apiKey: row.apiKey,
       webhookSecret: row.webhookSecret,
       scopes: row.scopes,
+      allowedIps: row.allowedIps,
     };
   }
 
@@ -254,6 +275,7 @@ export class AdminController {
       apiKey: row.apiKey,
       webhookSecret: row.webhookSecret,
       scopes: row.scopes,
+      allowedIps: row.allowedIps,
       active: row.active,
     };
   }

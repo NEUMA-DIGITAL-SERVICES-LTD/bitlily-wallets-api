@@ -46,6 +46,13 @@ export class ApiClient {
   @Column({ type: 'jsonb', default: '["wallet"]' })
   scopes: string[];
 
+  /**
+   * CIDRs/IPs this key may be used from. NULL/empty = unrestricted.
+   * When set, a leaked key is worthless outside the tenant's egress.
+   */
+  @Column({ name: 'allowed_ips', type: 'jsonb', nullable: true })
+  allowedIps: string[] | null;
+
   @Column({ default: true })
   active: boolean;
 

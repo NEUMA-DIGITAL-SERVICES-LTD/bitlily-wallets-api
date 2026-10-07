@@ -16,7 +16,9 @@ describe('ApiKeyGuard tenancy', () => {
           ? { appId: 'readonly-feed', scopes: ['read'] }
           : key === 'legacy-key-1'
             ? { appId: 'default', scopes: ['wallet'] }
-            : null,
+            : key === 'pinned-key'
+              ? { appId: 'pinned', scopes: ['wallet'], allowedIps: ['203.0.113.0/24', '2001:db8::/32'] }
+              : null,
   };
   const config: any = { get: () => undefined };
   const reflector: any = {
@@ -26,8 +28,8 @@ describe('ApiKeyGuard tenancy', () => {
   };
   const guard = new ApiKeyGuard(config, reflector, clients);
 
-  const ctxFor = (key?: string) => {
-    const req: any = { headers: key ? { 'x-api-key': key } : {} };
+  const ctxFor = (key?: string, ip?: string) => {
+    const req: any = { headers: key ? { 'x-api-key': key } : {}, ip };
     return { req, ctx: { switchToHttp: () => ({ getRequest: () => req }), getHandler: () => null, getClass: () => null } as any };
   };
 
@@ -62,5 +64,26 @@ describe('ApiKeyGuard tenancy', () => {
     reflector.requiredScope = 'wallet';
     const wallet = ctxFor('read-key');
     await expect(guard.canActivate(wallet.ctx)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('passes an allowlisted key from inside its CIDR — v4 and v6', async () => {
+    reflector.requiredScope = undefined;
+    await expect(guard.canActivate(ctxFor('pinned-key', '203.0.113.44').ctx)).resolves.toBe(true);
+    await expect(guard.canActivate(ctxFor('pinned-key', '2001:db8::99').ctx)).resolves.toBe(true);
+    // IPv6-mapped IPv4 peer form must still match the v4 rule.
+    await expect(guard.canActivate(ctxFor('pinned-key', '::ffff:203.0.113.44').ctx)).resolves.toBe(true);
+  });
+
+  it('rejects an allowlisted key used from outside its CIDRs', async () => {
+    reflector.requiredScope = undefined;
+    const off = ctxFor('pinned-key', '198.51.100.7');
+    await expect(guard.canActivate(off.ctx)).rejects.toThrow(ForbiddenException);
+    expect(off.req.appId).toBeUndefined(); // tenancy never attaches on IP failure
+  });
+
+  it('unrestricted keys are unaffected by source IP', async () => {
+    reflector.requiredScope = undefined;
+    await expect(guard.canActivate(ctxFor('acme-key-1234', '8.8.8.8').ctx)).resolves.toBe(true);
+    await expect(guard.canActivate(ctxFor('acme-key-1234', undefined).ctx)).resolves.toBe(true);
   });
 });

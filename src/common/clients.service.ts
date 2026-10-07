@@ -9,6 +9,8 @@ import { ApiClientConfig } from '../config/configuration';
 export interface ResolvedClient {
   appId: string;
   scopes: string[];
+  /** CIDRs this key may be used from. Undefined/empty = unrestricted. */
+  allowedIps?: string[];
 }
 
 export interface WebhookRoute {
@@ -41,11 +43,17 @@ export class ClientsService {
       timingSafeEqual(Buffer.from(key), Buffer.from(candidate));
 
     for (const c of this.config.get<ApiClientConfig[]>('service.clients') ?? []) {
-      if (eq(c.apiKey)) return { appId: c.slug, scopes: ['wallet'] };
+      if (eq(c.apiKey)) {
+        return { appId: c.slug, scopes: ['wallet'], allowedIps: c.allowedIps };
+      }
     }
     for (const c of await this.dbClients()) {
       if (c.active && eq(c.apiKey)) {
-        return { appId: c.slug, scopes: c.scopes?.length ? c.scopes : ['wallet'] };
+        return {
+          appId: c.slug,
+          scopes: c.scopes?.length ? c.scopes : ['wallet'],
+          allowedIps: c.allowedIps ?? undefined,
+        };
       }
     }
     for (const k of this.config.get<string[]>('service.apiKeys') ?? []) {
@@ -74,6 +82,7 @@ export class ClientsService {
       keyTail: `…${c.apiKey.slice(-4)}`,
       scopes: ['wallet'],
       webhookConfigured: !!c.webhookUrl,
+      allowedIps: c.allowedIps ?? null,
       active: true,
     }));
     const db = (await this.dbClients(true)).map((c) => ({
@@ -83,6 +92,7 @@ export class ClientsService {
       keyTail: `…${c.apiKey.slice(-4)}`,
       scopes: c.scopes,
       webhookConfigured: !!c.webhookUrl,
+      allowedIps: c.allowedIps,
       active: c.active,
     }));
     const envSlugs = new Set(env.map((e) => e.slug));
@@ -94,6 +104,7 @@ export class ClientsService {
     name?: string;
     webhookUrl?: string;
     scopes?: string[];
+    allowedIps?: string[];
   }): Promise<ApiClient> {
     const apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;
@@ -111,6 +122,7 @@ export class ClientsService {
     if (patch.webhookUrl !== undefined) row.webhookUrl = patch.webhookUrl;
     if (patch.active !== undefined) row.active = patch.active;
     if (patch.scopes !== undefined) row.scopes = patch.scopes;
+    if (patch.allowedIps !== undefined) row.allowedIps = patch.allowedIps;
     if (rotate) {
       row.apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
       row.webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;

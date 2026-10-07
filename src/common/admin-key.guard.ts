@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ipAllowed } from './ip-match';
 
 /**
  * Privilege separation for ops endpoints (custody enrollment, withdrawal
@@ -33,6 +34,13 @@ export class AdminKeyGuard implements CanActivate {
     if (adminKeys.length) {
       if (!key || !adminKeys.includes(key)) {
         throw new UnauthorizedException('Invalid or missing X-Admin-Key');
+      }
+      // Ops-source restriction: ADMIN_ALLOWED_IPS pins the admin key to ops
+      // egress CIDRs. Empty = unrestricted. This key mints spend-capable
+      // credentials — its blast radius justifies a second factor.
+      const allowedIps = this.config.get<string[]>('service.adminAllowedIps') ?? [];
+      if (allowedIps.length && !ipAllowed(req.ip, allowedIps)) {
+        throw new UnauthorizedException('X-Admin-Key not allowed from this IP');
       }
       return true;
     }
