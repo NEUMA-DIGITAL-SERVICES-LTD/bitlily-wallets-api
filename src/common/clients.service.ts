@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { timingSafeEqual } from 'crypto';
+import * as ipaddr from 'ipaddr.js';
 import { ApiClient } from '../database/entities/api-client.entity';
 import { ApiClientConfig } from '../config/configuration';
 
@@ -106,6 +107,7 @@ export class ClientsService {
     scopes?: string[];
     allowedIps?: string[];
   }): Promise<ApiClient> {
+    this.assertValidIps(input.allowedIps);
     const apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;
     const row = await this.repo.save(
@@ -122,13 +124,39 @@ export class ClientsService {
     if (patch.webhookUrl !== undefined) row.webhookUrl = patch.webhookUrl;
     if (patch.active !== undefined) row.active = patch.active;
     if (patch.scopes !== undefined) row.scopes = patch.scopes;
-    if (patch.allowedIps !== undefined) row.allowedIps = patch.allowedIps;
+    if (patch.allowedIps !== undefined) {
+      this.assertValidIps(patch.allowedIps);
+      row.allowedIps = patch.allowedIps;
+    }
     if (rotate) {
       row.apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
       row.webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;
     }
     this.cache = null;
     return this.repo.save(row);
+  }
+
+  /**
+   * Validate entries at write time — Swagger/JSON callers can send anything
+   * (observed: literal "string" placeholders). An unparseable entry stored
+   * would fail-closed at the guard and lock the client out of every IP.
+   */
+  private assertValidIps(cidrs: string[] | null | undefined): void {
+    for (const e of cidrs ?? []) {
+      try {
+        const [range, bits] = String(e).trim().split('/');
+        const a = ipaddr.parse(range);
+        if (bits !== undefined) {
+          const n = parseInt(bits, 10);
+          const max = a.kind() === 'ipv4' ? 32 : 128;
+          if (!Number.isInteger(n) || n < 0 || n > max) throw new Error();
+        }
+      } catch {
+        throw new BadRequestException(
+          `allowedIps entry '${e}' is not a valid IP or CIDR (e.g. "203.0.113.10" or "203.0.113.0/24")`,
+        );
+      }
+    }
   }
 
   private async dbClients(fresh = false): Promise<ApiClient[]> {
