@@ -394,6 +394,59 @@ export class WalletsService {
     });
   }
 
+  /**
+   * Provision (or return existing) PERMANENT per-chain addresses for the
+   * given assets — the exchange-model lazy mint folded into POST /wallets.
+   * Each entry flows through the same persistent path as the retired
+   * POST /wallets/:id/addresses route.
+   */
+  async ensureDepositAddresses(walletId: string, appId: string, assets: string[]) {
+    const out = [];
+    for (const asset of assets) {
+      out.push(
+        await this.generateDepositAddress(walletId, appId, asset, undefined, undefined, true),
+      );
+    }
+    return out;
+  }
+
+  /**
+   * Aggregate wallet read — the single GET behind the 2-endpoint surface.
+   * include folds in balances (ledger), addresses (watch rows) and/or a
+   * paginated transaction page. Anything not included stays off the wire.
+   */
+  async getWalletView(
+    id: string,
+    appId: string,
+    include?: string,
+    txLimit = 20,
+    txPage = 1,
+  ) {
+    const wallet = await this.getWalletOrThrow(id, appId);
+    const inc = new Set(
+      (include ?? 'balances,addresses').split(',').map((s) => s.trim()).filter(Boolean),
+    );
+    const view: Record<string, unknown> = { ...wallet };
+    if (inc.has('balances')) view.balances = await this.ledger.getBalances(id);
+    if (inc.has('addresses')) {
+      view.addresses = await this.addresses.find({
+        where: { account: { wallet: { id } } },
+        order: { createdAt: 'DESC' },
+      });
+    }
+    if (inc.has('transactions')) {
+      const limit = Math.min(Math.max(txLimit, 1), 100);
+      const page = Math.max(txPage, 1);
+      view.transactions = await this.txs.find({
+        where: { wallet: { id } },
+        order: { createdAt: 'DESC' },
+        take: limit,
+        skip: (page - 1) * limit,
+      });
+    }
+    return view;
+  }
+
   async getBalances(walletId: string, appId: string) {
     await this.getWalletOrThrow(walletId, appId);
     return this.ledger.getBalances(walletId);

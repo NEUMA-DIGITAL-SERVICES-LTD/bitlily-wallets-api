@@ -12,6 +12,9 @@ import { ClientsService } from '../../common/clients.service';
 import { addressPayload } from '../../common/address-payload';
 import { Inject } from '@nestjs/common';
 import { BLOCKCHAIN_PROVIDER, BlockchainProvider } from '../../providers/provider.interface';
+import { WalletsService } from '../wallets/wallets.service';
+import { Wallet } from '../../database/entities/wallet.entity';
+import { WatchAddressDto } from '../wallets/wallets.dto';
 
 class CreateClientDto {
   @ApiProperty({ description: 'Tenant slug — stamped on wallets.app_id' })
@@ -160,7 +163,25 @@ export class AdminController {
     private readonly config: ConfigService,
     private readonly clients: ClientsService,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
+    private readonly walletOps: WalletsService,
+    @InjectRepository(Wallet)
+    private readonly wallets: Repository<Wallet>,
   ) {}
+
+  @Post('wallets/:id/watch')
+  @ApiOperation({
+    summary:
+      'OPS recovery — re-watch an address for an asset on any tenant wallet. ' +
+      'Used for late payments to expired addresses and wrong-asset sends. ' +
+      'Moved out of the client surface: this is operator tooling.',
+  })
+  async watchWalletAddress(@Param('id') id: string, @Body() dto: WatchAddressDto) {
+    const wallet = await this.wallets.findOne({ where: { id } });
+    if (!wallet) throw new NotFoundException(`Wallet ${id} not found`);
+    return this.walletOps.watchAddress(
+      id, wallet.appId, dto.address, dto.asset, dto.expiresInMinutes,
+    );
+  }
 
   @Post('custody')
   @ApiOperation({

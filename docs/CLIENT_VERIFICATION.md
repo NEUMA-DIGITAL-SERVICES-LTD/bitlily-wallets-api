@@ -6,40 +6,81 @@ expected to pass; anything that doesn't is a finding, not a retry.
 Base URL: `https://<staging-host>/api/v1` — all calls need header
 `X-API-Key: <your tenant key>`.
 
-## 1. Create a wallet (permanent, one per user)
+The client-facing wallet surface is exactly **two** endpoints:
+
+| Route | Purpose |
+|---|---|
+| `POST /wallets` | Get-or-create the user's wallet; `ensure` provisions permanent addresses in the same call |
+| `GET /wallets/{id}` | Aggregate read — `?include=` folds in balances, addresses, transactions |
+
+Everything else (per-address generation, balance/tx sub-resources,
+re-watch) was deliberately folded in or moved to ops. A `404` on the old
+sub-routes is expected.
+
+## 1. Create a wallet + provision permanent addresses (one call)
 
 ```bash
 curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"externalUserId":"verify-user-1"}'
+  -d '{"externalUserId":"verify-user-1","ensure":["TRX","BTC","USDT_TRON"]}'
 ```
 
-Expected: `201` → `{ "id": "<walletId>", "appId": "<your slug>", ... }`.
-Re-running with the same `externalUserId` returns the **same** wallet —
-call it freely at signup; it's idempotent.
+Expected: `201` →
 
-## 2. Permanent deposit address (exchange model)
+```json
+{
+  "id": "<walletId>",
+  "externalUserId": "verify-user-1",
+  "appId": "<your slug>",
+  "addresses": [
+    { "asset": "TRX",       "address": "T...",   "expiresAt": null },
+    { "asset": "BTC",       "address": "tb1...", "expiresAt": null },
+    { "asset": "USDT_TRON", "address": "T...",   "expiresAt": null }
+  ]
+}
+```
+
+- `ensure` creates a **permanent** address per chain — `expiresAt: null`.
+- `USDT_TRON` reuses the `TRX` address (same-chain assets share one
+  address — that is the exchange model, not a bug).
+- Omit `ensure` to create the wallet with no addresses yet.
+
+## 2. Idempotency + adding a chain later
 
 ```bash
-curl -X POST $BASE/wallets/<walletId>/addresses \
-  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"asset":"TRX","persistent":true}'
+# Repeat the exact call — same wallet, same addresses:
+curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"externalUserId":"verify-user-1","ensure":["TRX","BTC","USDT_TRON"]}'
+
+# First interaction on a NEW chain — same call, new ensure entry:
+curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"externalUserId":"verify-user-1","ensure":["ETH"]}'
 ```
 
-Expected: `{ "address": "T...", "expiresAt": null }`.
+Expected: same `id` every time; existing addresses unchanged; the second
+call appends a permanent `ETH` address (Bybit model — a chain's address
+is minted once, on first use, and never expires).
 
-- Call it again → **identical** `address` and `id` (proves permanence).
-- `{"asset":"USDT_TRON","persistent":true}` → **same** address (same chain).
-- `{"asset":"TRX","persistent":true,"expiresInMinutes":30}` → `400` —
-  permanent and expiring are contradictory.
-- Omitting `persistent` → a temporary per-payment address with a TTL.
+## 3. Read the wallet aggregate
 
-## 3. Deposit → credit → webhook
+```bash
+# Default view (balances + addresses):
+curl $BASE/wallets/<walletId> -H "X-API-Key: $KEY"
+
+# Fold in transactions (paginated):
+curl "$BASE/wallets/<walletId>?include=balances,addresses,transactions&txLimit=50&txPage=1" \
+  -H "X-API-Key: $KEY"
+```
+
+Expected: `include` controls which sections appear; sections not
+requested stay out of the payload. `txLimit`≤100, `txPage` is 1-based.
+
+## 4. Deposit → credit → webhook
 
 Send a small amount of the asset to the address (any external wallet, or
 ask ops to seed). Within ~2 poll cycles (≤ ~4 min):
 
 ```bash
-curl $BASE/wallets/<walletId> -H "X-API-Key: $KEY"
+curl "$BASE/wallets/<walletId>?include=balances,transactions" -H "X-API-Key: $KEY"
 ```
 
 Expected: balance reflects the deposit; a `transactions` entry shows
@@ -60,7 +101,7 @@ anything that doesn't match. Events are at-least-once — dedupe on
 If your endpoint is down, deliveries retry ~4h then dead-letter — nothing
 is silently lost.
 
-## 4. Withdrawal → broadcast → confirm
+## 5. Withdrawal → broadcast → confirm
 
 ```bash
 curl -X POST $BASE/transactions -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
@@ -71,7 +112,7 @@ Expected: `201` → `status:"pending"`. The KMS daemon signs within seconds;
 status flips `pending → confirmed` as chain confirmations land
 (`GET $BASE/transactions/<id>`). A `withdrawal.confirmed` webhook fires.
 
-## 5. Tenant isolation
+## 6. Tenant isolation
 
 Ask ops for a wallet ID from a *different* tenant, then:
 
@@ -81,7 +122,7 @@ curl $BASE/wallets/<foreign-wallet-id> -H "X-API-Key: $KEY"
 
 Expected: `404` — your key cannot see another app's data.
 
-## 6. Registering additional apps
+## 7. Registering additional apps
 
 `POST /admin/clients` mints new tenant keys — it's **admin-gated**
 (requires `X-Admin-Key`, held by platform ops). During staging, request new
@@ -103,6 +144,13 @@ key (fees/health — cannot create wallets or move funds).
 `PATCH /admin/clients/{slug}` — update webhookUrl/scopes/allowedIps,
 `{"active":false}` suspends instantly, `{"rotate":true}` regenerates both
 credentials (old ones die immediately).
+
+## 8. Ops recovery (not part of your integration)
+
+If a user pays an address after its watch window lapses, or sends the
+wrong asset to a watched address, ops re-arms polling via
+`POST /admin/wallets/<walletId>/watch` (admin-gated). This is operator
+tooling — your app never calls it; raise it with ops when it happens.
 
 ## Known boundary — SOL deposits
 

@@ -1,11 +1,51 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Max, Min } from 'class-validator';
 
 export class CreateWalletDto {
   @ApiProperty({ description: 'The user ID in the main Bitlily application' })
   @IsString()
   @IsNotEmpty()
   externalUserId: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Assets to provision PERMANENT deposit addresses for, e.g. ' +
+      '["TRX","BTC"]. Idempotent per chain — first call derives, later ' +
+      'calls return the same address. Same-chain assets (SOL+USDC_SOL) ' +
+      'share one address. Omit to create the wallet only.',
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  ensure?: string[];
+}
+
+export class WalletQueryDto {
+  @ApiPropertyOptional({
+    description:
+      'Comma-separated sections to fold into the response: ' +
+      'balances, addresses, transactions. Default: balances,addresses.',
+    default: 'balances,addresses',
+  })
+  @IsString()
+  @IsOptional()
+  include?: string;
+
+  @ApiPropertyOptional({ description: 'Transactions page size (when include=transactions)', default: 20 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  txLimit?: number;
+
+  @ApiPropertyOptional({ description: 'Transactions page number, 1-based (when include=transactions)', default: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  txPage?: number;
 }
 
 export class GenerateAddressDto {
