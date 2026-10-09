@@ -6,25 +6,25 @@ expected to pass; anything that doesn't is a finding, not a retry.
 Base URL: `https://<staging-host>/api/v1` — all calls need header
 `X-API-Key: <your tenant key>`.
 
-The client-facing wallet surface is exactly **two** endpoints:
+The client-facing wallet surface is exactly **two** routes:
 
 | Route | Purpose |
 |---|---|
-| `POST /wallets` | Get-or-create the user's wallet; `ensure` provisions permanent addresses in the same call |
-| `GET /wallets/{id}` | Aggregate read — `?include=` folds in balances, addresses, transactions |
+| `POST /wallets` | Get-or-create the user's wallet AND provision permanent deposit addresses |
+| `GET /wallets/{id}` (or `GET /wallets?externalUserId=`) | Aggregate read — `?include=` folds in balances, addresses, transactions |
 
 Everything else (per-address generation, balance/tx sub-resources,
 re-watch) was deliberately folded in or moved to ops. A `404` on the old
 sub-routes is expected.
 
-## 1. Create a wallet + provision permanent addresses (one call)
+## 1. Create a wallet — all permanent addresses in one call
 
 ```bash
 curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"externalUserId":"verify-user-1","ensure":["TRX","BTC","USDT_TRON"]}'
+  -d '{"externalUserId":"verify-user-1"}'
 ```
 
-Expected: `201` →
+Expected: `201` → wallet + one permanent address **per HD chain**:
 
 ```json
 {
@@ -32,33 +32,42 @@ Expected: `201` →
   "externalUserId": "verify-user-1",
   "appId": "<your slug>",
   "addresses": [
-    { "asset": "TRX",       "address": "T...",   "expiresAt": null },
-    { "asset": "BTC",       "address": "tb1...", "expiresAt": null },
-    { "asset": "USDT_TRON", "address": "T...",   "expiresAt": null }
+    { "address": "T...",    "chain": "TRON",    "assets": ["TRX","USDT_TRON"],       "expiresAt": null },
+    { "address": "tb1...",  "chain": "BTC",     "assets": ["BTC"],                   "expiresAt": null },
+    { "address": "0x...",   "chain": "ETH",     "assets": ["ETH","USDT_ETH","USDC_ETH"], "expiresAt": null },
+    { "address": "0x...",   "chain": "POLYGON", "assets": ["POL","USDT_MATIC","USDC_MATIC"], "expiresAt": null },
+    { "address": "msS...",  "chain": "LTC",     "assets": ["LTC"],                   "expiresAt": null }
   ]
 }
 ```
 
-- `ensure` creates a **permanent** address per chain — `expiresAt: null`.
-- `USDT_TRON` reuses the `TRX` address (same-chain assets share one
-  address — that is the exchange model, not a bug).
-- Omit `ensure` to create the wallet with no addresses yet.
+- Every address is **permanent** — `expiresAt: null`, reusable forever.
+- One entry per *address*, not per asset — `assets` lists everything the
+  address accepts (TRON covers TRX + USDT_TRON, ETH covers ETH + tokens).
+- **SOL is deliberately not auto-provisioned**: it shares one custody
+  address across wallets with no per-user attribution (see §Known
+  boundary). Add it explicitly only if you handle its ops flow:
+  `{"externalUserId":"…","ensure":["SOL"]}`.
 
-## 2. Idempotency + adding a chain later
+## 2. Idempotency + selective provisioning + GET lookup
 
 ```bash
 # Repeat the exact call — same wallet, same addresses:
 curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"externalUserId":"verify-user-1","ensure":["TRX","BTC","USDT_TRON"]}'
+  -d '{"externalUserId":"verify-user-1"}'
 
-# First interaction on a NEW chain — same call, new ensure entry:
+# Provision just one chain (e.g. SOL opted-in later):
 curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"externalUserId":"verify-user-1","ensure":["ETH"]}'
+  -d '{"externalUserId":"verify-user-1","ensure":["SOL"]}'
+
+# Pure read by YOUR user id — never creates, 404 if absent:
+curl "$BASE/wallets?externalUserId=verify-user-1" -H "X-API-Key: $KEY"
 ```
 
-Expected: same `id` every time; existing addresses unchanged; the second
-call appends a permanent `ETH` address (Bybit model — a chain's address
-is minted once, on first use, and never expires).
+Expected: same `id` every time; `addresses` always returns the **full**
+permanent set (existing + newly provisioned). If a new chain is enabled
+later, an existing wallet's next `POST /wallets` mints its address then —
+first touch on a new chain just works.
 
 ## 3. Read the wallet aggregate
 

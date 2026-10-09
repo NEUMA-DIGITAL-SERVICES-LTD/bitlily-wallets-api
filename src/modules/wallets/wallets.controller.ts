@@ -1,20 +1,25 @@
-import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto, WalletQueryDto } from './wallets.dto';
 import { RequireScope } from '../../common/api-key.guard';
 
 /**
- * The wallet surface is deliberately TWO routes — the exchange-model
- * lifecycle in one write and one aggregate read:
+ * The wallet surface is deliberately small — the exchange-model lifecycle
+ * in one write and one read:
  *
- *   POST /wallets   get-or-create by externalUserId; `ensure` provisions
- *                   permanent per-chain deposit addresses in the same call
- *                   (first touch on a chain derives, later calls reuse).
+ *   POST /wallets   get-or-create by externalUserId AND provision permanent
+ *                   deposit addresses: every HD chain when `ensure` is
+ *                   omitted, just the listed chains when given. Always
+ *                   returns the wallet's full permanent address set.
+ *
+ *   GET  /wallets?externalUserId=   same view, by YOUR user id — pure read,
+ *                   never creates (GET is a safe method).
  *
  *   GET  /wallets/:id?include=balances,addresses,transactions
  *                   aggregate read — include folds in ledger balances,
- *                   deposit addresses, and/or a paginated tx page.
+ *                   permanent addresses, and/or a paginated tx page
+ *                   (chain=/asset= filters).
  *
  * Address recovery (re-watch after expiry / wrong-asset sends) is ops
  * tooling, not client API — it lives at POST /admin/wallets/:id/watch.
@@ -29,16 +34,38 @@ export class WalletsController {
   @Post()
   @ApiOperation({
     summary:
-      'Get-or-create a wallet for an app user (idempotent). Optional ' +
-      '`ensure` provisions permanent per-chain deposit addresses in the ' +
-      'same call — repeat calls return the same addresses.',
+      'Get-or-create a wallet for an app user (idempotent) and provision ' +
+      'permanent deposit addresses. Omit `ensure` → addresses on every ' +
+      'HD-derivable chain at once (first call mints, later calls reuse). ' +
+      'Pass `ensure: ["TRX"]` to provision just those chains. Response ' +
+      '`addresses` is always the wallet\'s full permanent set, one entry ' +
+      'per address — same-chain assets list together under `assets`. ' +
+      'Account-model chains (SOL: shared custody address, no per-user ' +
+      'attribution) are only provisioned via explicit ensure.',
   })
-  async create(@Body() dto: CreateWalletDto, @Req() req: any) {
-    const wallet = await this.wallets.createWallet(dto.externalUserId, req.appId);
-    const addresses = dto.ensure?.length
-      ? await this.wallets.ensureDepositAddresses(wallet.id, req.appId, dto.ensure)
-      : [];
-    return { ...wallet, addresses };
+  create(@Body() dto: CreateWalletDto, @Req() req: any) {
+    return this.wallets.upsertWalletWithAddresses(dto.externalUserId, req.appId, dto.ensure);
+  }
+
+  @Get()
+  @ApiOperation({
+    summary:
+      'Look a wallet up by YOUR user id (read-only — never creates). ' +
+      'Same aggregate view as GET /wallets/:id; 404 until the wallet has ' +
+      'been POSTed. Creation is deliberately POST-only: GET is a safe ' +
+      'method that caches/prefetches may retry, so it must not mint ' +
+      'addresses.',
+  })
+  async findByExternalId(
+    @Query('externalUserId') externalUserId: string,
+    @Query() q: WalletQueryDto,
+    @Req() req: any,
+  ) {
+    if (!externalUserId) {
+      throw new BadRequestException('externalUserId query param is required');
+    }
+    const wallet = await this.wallets.findByExternalId(externalUserId, req.appId);
+    return this.wallets.getWalletView(wallet.id, req.appId, q);
   }
 
   @Get(':id')

@@ -7,13 +7,13 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager, FindOptionsWhere, Repository } from 'typeorm';
+import { DataSource, EntityManager, FindOptionsWhere, IsNull, Repository } from 'typeorm';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
-import { ASSET_REGISTRY, enabledAssets, getAsset } from '../../config/assets';
+import { ASSET_REGISTRY, Chain, enabledAssets, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
@@ -55,7 +55,6 @@ export class WalletsService {
     if (existing) return existing;
 
     const chains = [...new Set(enabledAssets().map((a) => a.chain))];
-    const useKms = this.config.get('tatum.useKms') === true;
 
     // Two account models:
     //  KMS   — all wallets share the chain's enrolled custody account
@@ -69,33 +68,8 @@ export class WalletsService {
       material: { xpub?: string; baseAddress?: string };
       secretRef: string | null;
     }[] = [];
-    if (useKms) {
-      for (const chain of chains) {
-        const custody = await this.custody.findOne({ where: { chain } });
-        if (!custody) {
-          throw new BadRequestException(
-            `No enrolled custody wallet for ${chain} — run ` +
-            `tatum-kms generatemanagedwallet ${chain} on the KMS host, then ` +
-            `POST /api/v1/admin/custody.`,
-          );
-        }
-        enrolled.push({
-          chain,
-          material: { xpub: custody.xpub, baseAddress: custody.baseAddress },
-          secretRef: custody.secretRef,
-        });
-      }
-    } else {
-      for (const chain of chains) {
-        const material = await this.provider.createChainAccount(chain);
-        // HD chains return a mnemonic; account-model chains (SOL) return the
-        // key itself in material.mnemonic — map by shape, not chain name.
-        const secretRef = await this.secretStore.enroll(chain, {
-          mnemonic: material.xpub ? material.mnemonic : undefined,
-          privateKey: material.baseAddress ? material.mnemonic : undefined,
-        });
-        enrolled.push({ chain, material, secretRef });
-      }
+    for (const chain of chains) {
+      enrolled.push({ chain, ...(await this.chainMaterial(chain)) });
     }
 
     const wallet = await this.dataSource.transaction(async (em) => {
@@ -116,6 +90,99 @@ export class WalletsService {
     return this.wallets.findOneOrFail({ where: { id: wallet.id }, relations: ['accounts'] });
   }
 
+  /**
+   * Resolves chain-level account material — KMS mode borrows the enrolled
+   * custody account (xpub/baseAddress + signatureId ref); dev mode generates
+   * per-wallet material through the provider and enrolls it into the
+   * secret store.
+   */
+  private async chainMaterial(chain: Chain): Promise<{
+    material: { xpub?: string; baseAddress?: string };
+    secretRef: string | null;
+  }> {
+    if (this.config.get('tatum.useKms') === true) {
+      const custody = await this.custody.findOne({ where: { chain } });
+      if (!custody) {
+        throw new BadRequestException(
+          `No enrolled custody wallet for ${chain} — run ` +
+          `tatum-kms generatemanagedwallet ${chain} on the KMS host, then ` +
+          `POST /api/v1/admin/custody.`,
+        );
+      }
+      return {
+        material: { xpub: custody.xpub, baseAddress: custody.baseAddress },
+        secretRef: custody.secretRef,
+      };
+    }
+    const material = await this.provider.createChainAccount(chain);
+    // HD chains return a mnemonic; account-model chains (SOL) return the
+    // key itself in material.mnemonic — map by shape, not chain name.
+    const secretRef = await this.secretStore.enroll(chain, {
+      mnemonic: material.xpub ? material.mnemonic : undefined,
+      privateKey: material.baseAddress ? material.mnemonic : undefined,
+    });
+    return { material, secretRef };
+  }
+
+  /**
+   * Lazily create WalletAccounts for chains the wallet predates — a wallet
+   * created before a chain was enabled must still be able to take a first
+   * deposit on it. orIgnore: a concurrent ensure for the same (wallet,
+   * chain) loses the insert race harmlessly — the winner's row carries the
+   * same custody material.
+   */
+  private async ensureChainAccounts(
+    walletId: string,
+    appId: string,
+    chains: string[],
+  ): Promise<void> {
+    const have = new Set(
+      (await this.accounts.find({ where: { wallet: { id: walletId, appId } } }))
+        .map((a) => a.chain),
+    );
+    for (const chain of chains.filter((c) => !have.has(c))) {
+      const { material, secretRef } = await this.chainMaterial(chain as Chain);
+      await this.accounts
+        .createQueryBuilder()
+        .insert()
+        .values({
+          wallet: { id: walletId } as Wallet,
+          chain,
+          xpub: material.xpub ?? null,
+          baseAddress: material.baseAddress ?? null,
+          secretRef,
+        })
+        .orIgnore()
+        .execute();
+    }
+  }
+
+  /**
+   * The wallet's permanent deposit addresses, grouped one row per address:
+   * {address, chain, assets[], expiresAt:null}. Same-chain assets share the
+   * address, so per-asset rows would repeat it — grouping is the honest
+   * representation of the exchange model. Expired/temporary watch rows are
+   * ops internals, not user-facing addresses.
+   */
+  async permanentAddresses(walletId: string) {
+    const rows = await this.addresses.find({
+      where: {
+        account: { wallet: { id: walletId } },
+        expiresAt: IsNull(),
+        status: 'active',
+      },
+      relations: ['account'],
+      order: { createdAt: 'ASC' },
+    });
+    const grouped = new Map<string, { address: string; chain: string; assets: string[]; expiresAt: null }>();
+    for (const r of rows) {
+      const g = grouped.get(r.address) ?? { address: r.address, chain: r.chain, assets: [], expiresAt: null };
+      if (!g.assets.includes(r.asset)) g.assets.push(r.asset);
+      grouped.set(r.address, g);
+    }
+    return [...grouped.values()];
+  }
+
   async getWalletOrThrow(id: string, appId: string): Promise<Wallet> {
     // Scoped by appId — a wallet owned by another tenant is invisible (404,
     // not 403: don't confirm the ID exists to a foreign app).
@@ -124,6 +191,17 @@ export class WalletsService {
       relations: ['accounts'],
     });
     if (!w) throw new NotFoundException(`Wallet ${id} not found`);
+    return w;
+  }
+
+  /**
+   * Tenant-scoped lookup by the app's own user id — the read half of
+   * get-or-create. 404 (not create) when absent: this backs GET /wallets,
+   * a safe method that must never provision.
+   */
+  async findByExternalId(externalUserId: string, appId: string): Promise<Wallet> {
+    const w = await this.wallets.findOne({ where: { externalUserId, appId } });
+    if (!w) throw new NotFoundException(`No wallet for externalUserId ${externalUserId}`);
     return w;
   }
 
@@ -397,17 +475,56 @@ export class WalletsService {
   /**
    * Provision (or return existing) PERMANENT per-chain addresses for the
    * given assets — the exchange-model lazy mint folded into POST /wallets.
-   * Each entry flows through the same persistent path as the retired
-   * POST /wallets/:id/addresses route.
+   * Dedupes by chain (same-chain assets share one address — one derive per
+   * chain), creates missing chain accounts for wallets predating a chain,
+   * then derives in parallel across chains (independent counters/accounts).
    */
   async ensureDepositAddresses(walletId: string, appId: string, assets: string[]) {
-    const out = [];
-    for (const asset of assets) {
-      out.push(
-        await this.generateDepositAddress(walletId, appId, asset, undefined, undefined, true),
-      );
+    const firstAssetOfChain = new Map<string, string>();
+    for (const code of assets) {
+      const asset = getAsset(code);
+      if (!asset) throw new BadRequestException(`Unsupported asset: ${code}`);
+      if (!firstAssetOfChain.has(asset.chain)) firstAssetOfChain.set(asset.chain, asset.code);
     }
-    return out;
+    const chains = [...firstAssetOfChain.keys()];
+    await this.ensureChainAccounts(walletId, appId, chains);
+    await Promise.all(
+      [...firstAssetOfChain.values()].map((code) =>
+        this.generateDepositAddress(walletId, appId, code, undefined, undefined, true),
+      ),
+    );
+  }
+
+  /**
+   * POST /wallets semantics: get-or-create the wallet, then provision
+   * permanent addresses — ALL HD chains when `ensure` is omitted (first
+   * call = full deposit-address set, like the custody xpub enrollment),
+   * or just the listed assets' chains when provided. Account-model chains
+   * (SOL — one shared custody address, no per-user attribution) are skipped
+   * in auto-mode but remain reachable via explicit ensure.
+   * Response `addresses` is always the wallet's full permanent set.
+   */
+  async upsertWalletWithAddresses(externalUserId: string, appId: string, ensure?: string[]) {
+    const wallet = await this.createWallet(externalUserId, appId);
+
+    let wanted: string[];
+    if (ensure?.length) {
+      wanted = ensure;
+    } else {
+      // Auto-all = chains with HD-derivable (per-user) addresses. Ensure
+      // accounts exist for every enabled chain FIRST so the shared-vs-HD
+      // check is uniform for old and new wallets alike.
+      const allChains = [...new Set(enabledAssets().map((a) => a.chain))];
+      await this.ensureChainAccounts(wallet.id, appId, allChains);
+      const accts = await this.accounts.find({ where: { wallet: { id: wallet.id } } });
+      const shared = new Set(accts.filter((a) => !a.xpub && a.baseAddress).map((a) => a.chain));
+      wanted = enabledAssets()
+        .filter((a) => a.type === 'native' && !shared.has(a.chain))
+        .map((a) => a.code);
+    }
+
+    await this.ensureDepositAddresses(wallet.id, appId, wanted);
+    return { ...wallet, addresses: await this.permanentAddresses(wallet.id) };
   }
 
   /**
@@ -432,12 +549,7 @@ export class WalletsService {
     );
     const view: Record<string, unknown> = { ...wallet };
     if (inc.has('balances')) view.balances = await this.ledger.getBalances(id);
-    if (inc.has('addresses')) {
-      view.addresses = await this.addresses.find({
-        where: { account: { wallet: { id } } },
-        order: { createdAt: 'DESC' },
-      });
-    }
+    if (inc.has('addresses')) view.addresses = await this.permanentAddresses(id);
     if (inc.has('transactions')) {
       const limit = Math.min(Math.max(q.txLimit ?? 20, 1), 100);
       const page = Math.max(q.txPage ?? 1, 1);

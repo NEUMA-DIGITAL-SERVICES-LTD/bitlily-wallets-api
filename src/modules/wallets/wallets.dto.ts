@@ -11,9 +11,10 @@ export class CreateWalletDto {
   @ApiPropertyOptional({
     description:
       'Assets to provision PERMANENT deposit addresses for, e.g. ' +
-      '["TRX","BTC"]. Idempotent per chain — first call derives, later ' +
-      'calls return the same address. Same-chain assets (SOL+USDC_SOL) ' +
-      'share one address. Omit to create the wallet only.',
+      '["TRX","USDT_TRON"]. Idempotent per chain — first call derives, ' +
+      'later calls return the same address; same-chain assets share one ' +
+      'address. OMIT to provision every HD-derivable chain at once — the ' +
+      'response always carries the wallet\'s full permanent address set.',
   })
   @IsArray()
   @IsString({ each: true })
