@@ -90,12 +90,7 @@ export class TransactionsService {
         relations: ['wallet'],
       });
       if (dupe) {
-        const samePayload =
-          dupe.asset === asset.code &&
-          dupe.address === dto.toAddress &&
-          Math.abs(parseFloat(dupe.amount) - amount) < 1e-12 &&
-          dupe.wallet.id === dto.walletId;
-        if (samePayload) return dupe;
+        if (this.sameWithdrawalPayload(dupe, dto, asset.code)) return dupe;
         throw new ConflictException(
           `reference "${dto.reference}" was already used for a different ` +
           `withdrawal (tx ${dupe.id}) — references must be unique per send`,
@@ -165,8 +160,17 @@ export class TransactionsService {
             direction: 'outbound',
             reference: dto.reference,
           },
+          relations: ['wallet'],
         });
-        if (winner) return winner;
+        if (winner) {
+          // The winner may be a DIFFERENT payload under the same reference —
+          // returning it would tell the caller funds moved that never did.
+          if (this.sameWithdrawalPayload(winner, dto, asset.code)) return winner;
+          throw new ConflictException(
+            `reference "${dto.reference}" was already used for a different ` +
+            `withdrawal (tx ${winner.id}) — references must be unique per send`,
+          );
+        }
       }
       throw e;
     }
@@ -284,6 +288,39 @@ export class TransactionsService {
     tx.status = 'rejected';
     await this.notifier.notify('withdrawal.rejected', tx);
     return tx;
+  }
+
+  /**
+   * Same-reference dedupe must only fire for the SAME logical send —
+   * wallet, asset, destination and amount all equal. Any difference means
+   * the caller reused a reference for a new send (a bug worth a loud 409,
+   * not a silent return of somebody else's tx).
+   */
+  private sameWithdrawalPayload(
+    tx: Transaction,
+    dto: SendTransactionDto,
+    assetCode: string,
+  ): boolean {
+    return (
+      tx.asset === assetCode &&
+      tx.address === dto.toAddress &&
+      tx.wallet.id === dto.walletId &&
+      this.sameAmount(tx.amount, dto.amount)
+    );
+  }
+
+  /**
+   * Decimal-string amount equality — float compare is unsafe at 18-decimal
+   * token precision (|1e-18 − 2e-18| < ε would "match" different amounts).
+   * Normalizes instead: BigInt integer part + trailing-zero-stripped
+   * fraction, so '1', '1.0' and '1.000000000000000000' compare equal.
+   */
+  private sameAmount(a: string, b: string): boolean {
+    const norm = (s: string) => {
+      const [i, f = ''] = s.trim().split('.');
+      return `${BigInt(i || '0')}.${f.replace(/0+$/, '')}`;
+    };
+    return norm(a) === norm(b);
   }
 
   async get(id: string, appId: string): Promise<Transaction> {

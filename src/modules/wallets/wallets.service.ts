@@ -21,7 +21,7 @@ import {
 } from '../../providers/provider.interface';
 import { SECRET_STORE, SecretStore } from '../../secrets/secret-store';
 import { LedgerService } from '../../ledger/ledger.service';
-import { errMsg } from '../../common/errors';
+import { errCode, errMsg } from '../../common/errors';
 
 @Injectable()
 export class WalletsService {
@@ -72,22 +72,33 @@ export class WalletsService {
       enrolled.push({ chain, ...(await this.chainMaterial(chain)) });
     }
 
-    const wallet = await this.dataSource.transaction(async (em) => {
-      const w = await em.save(em.create(Wallet, { externalUserId, appId }));
-      for (const { chain, material, secretRef } of enrolled) {
-        await em.save(
-          em.create(WalletAccount, {
-            wallet: w,
-            chain,
-            xpub: material.xpub,
-            baseAddress: material.baseAddress,
-            secretRef,
-          }),
-        );
+    try {
+      const wallet = await this.dataSource.transaction(async (em) => {
+        const w = await em.save(em.create(Wallet, { externalUserId, appId }));
+        for (const { chain, material, secretRef } of enrolled) {
+          await em.save(
+            em.create(WalletAccount, {
+              wallet: w,
+              chain,
+              xpub: material.xpub,
+              baseAddress: material.baseAddress,
+              secretRef,
+            }),
+          );
+        }
+        return w;
+      });
+      return this.wallets.findOneOrFail({ where: { id: wallet.id }, relations: ['accounts'] });
+    } catch (e) {
+      // "Call it freely" invites concurrent first-creates: both pass the
+      // existence check, the loser's INSERT violates UQ(appId,
+      // externalUserId) — the idempotent answer is the winner's wallet.
+      if (errCode(e) === '23505') {
+        const winner = await this.wallets.findOne({ where: { externalUserId, appId } });
+        if (winner) return winner;
       }
-      return w;
-    });
-    return this.wallets.findOneOrFail({ where: { id: wallet.id }, relations: ['accounts'] });
+      throw e;
+    }
   }
 
   /**
@@ -180,7 +191,16 @@ export class WalletsService {
       if (!g.assets.includes(r.asset)) g.assets.push(r.asset);
       grouped.set(r.address, g);
     }
-    return [...grouped.values()];
+    // Deterministic ordering: native first, then alphabetical — row
+    // createdAt ties returned arbitrary orders between identical calls.
+    return [...grouped.values()].map((g) => ({
+      ...g,
+      assets: [...g.assets].sort((a, b) => {
+        const na = getAsset(a)?.type === 'native' ? 0 : 1;
+        const nb = getAsset(b)?.type === 'native' ? 0 : 1;
+        return na - nb || a.localeCompare(b);
+      }),
+    }));
   }
 
   async getWalletOrThrow(id: string, appId: string): Promise<Wallet> {
@@ -506,6 +526,10 @@ export class WalletsService {
    */
   async upsertWalletWithAddresses(externalUserId: string, appId: string, ensure?: string[]) {
     const wallet = await this.createWallet(externalUserId, appId);
+    // accounts carry xpub + KMS secretRef — internal custody plumbing.
+    // Strip before it can reach a client response (a leaked xpub lets an
+    // observer derive EVERY future deposit address on that chain).
+    const { accounts: _drop, ...pub } = wallet as Wallet & { accounts?: unknown };
 
     let wanted: string[];
     if (ensure?.length) {
@@ -524,7 +548,7 @@ export class WalletsService {
     }
 
     await this.ensureDepositAddresses(wallet.id, appId, wanted);
-    return { ...wallet, addresses: await this.permanentAddresses(wallet.id) };
+    return { ...pub, addresses: await this.permanentAddresses(wallet.id) };
   }
 
   /**
@@ -547,7 +571,9 @@ export class WalletsService {
     const inc = new Set(
       (q.include ?? 'balances,addresses').split(',').map((s) => s.trim()).filter(Boolean),
     );
-    const view: Record<string, unknown> = { ...wallet };
+    // accounts are custody internals (xpub + secretRef) — never on the wire.
+    const { accounts: _drop, ...pub } = wallet;
+    const view: Record<string, unknown> = { ...pub };
     if (inc.has('balances')) view.balances = await this.ledger.getBalances(id);
     if (inc.has('addresses')) view.addresses = await this.permanentAddresses(id);
     if (inc.has('transactions')) {

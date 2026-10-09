@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, IsUUID, Matches } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, IsUUID, Matches, MaxLength } from 'class-validator';
 
 /**
  * Strict positive-decimal amount. IsNumberString allows '-5', '+5', '.5' —
@@ -38,6 +38,7 @@ export class SendTransactionDto {
       'production.',
   })
   @IsString()
+  @MaxLength(128)
   @IsOptional()
   reference?: string;
 }

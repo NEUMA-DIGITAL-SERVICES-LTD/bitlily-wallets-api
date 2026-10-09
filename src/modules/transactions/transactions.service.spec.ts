@@ -157,6 +157,38 @@ describe('TransactionsService.send', () => {
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
+  it('loses the concurrent race to a DIFFERENT payload under the same reference → 409, not the winner\'s tx', async () => {
+    // Both sends pass the dupe check; loser hits UQ_tx_reference. Returning
+    // the winner unconditionally would claim a send that never happened.
+    txs.findOne
+      .mockResolvedValueOnce(null) // dupe lookup — no prior row
+      .mockResolvedValueOnce({     // winner after the 23505 — different amount
+        id: 'tx-winner', txid: '0xreal',
+        asset: 'ETH', address: dto.toAddress, amount: '9.0',
+        wallet: { id: 'w1', appId: 'default' },
+      });
+    dataSource.transaction.mockRejectedValue({ code: '23505' });
+
+    await expect(service.send(dto, 'default')).rejects.toThrow(
+      /reference "payout-1" was already used/,
+    );
+  });
+
+  it('loses the concurrent race to the SAME payload → returns the winner (true retry)', async () => {
+    const winner = {
+      id: 'tx-winner', txid: '0xreal',
+      asset: 'ETH', address: dto.toAddress, amount: '0.010000000000000000',
+      wallet: { id: 'w1', appId: 'default' },
+    };
+    txs.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(winner);
+    dataSource.transaction.mockRejectedValue({ code: '23505' });
+
+    // '0.01' vs stored '0.010000000000000000' — exact decimal normalization.
+    await expect(service.send(dto, 'default')).resolves.toBe(winner);
+  });
+
   it('scopes the account lookup by tenant — foreign walletId finds nothing', async () => {
     // The where clause carries both id and appId; with a foreign appId the
     // DB returns nothing, so emulate that (the mock is otherwise honest

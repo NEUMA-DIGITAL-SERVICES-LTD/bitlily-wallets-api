@@ -1,5 +1,5 @@
 import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
-import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto, WalletQueryDto } from './wallets.dto';
 import { RequireScope } from '../../common/api-key.guard';
@@ -56,6 +56,7 @@ export class WalletsController {
       'method that caches/prefetches may retry, so it must not mint ' +
       'addresses.',
   })
+  @ApiQuery({ name: 'externalUserId', required: true, description: 'The user ID in YOUR application' })
   async findByExternalId(
     @Query('externalUserId') externalUserId: string,
     @Query() q: WalletQueryDto,
