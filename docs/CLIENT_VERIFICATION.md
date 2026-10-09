@@ -69,10 +69,18 @@ curl $BASE/wallets/<walletId> -H "X-API-Key: $KEY"
 # Fold in transactions (paginated):
 curl "$BASE/wallets/<walletId>?include=balances,addresses,transactions&txLimit=50&txPage=1" \
   -H "X-API-Key: $KEY"
+
+# Narrow transactions to a chain or asset:
+curl "$BASE/wallets/<walletId>?include=transactions&chain=TRON" -H "X-API-Key: $KEY"
+curl "$BASE/wallets/<walletId>?include=transactions&asset=USDT_TRON" -H "X-API-Key: $KEY"
 ```
 
 Expected: `include` controls which sections appear; sections not
 requested stay out of the payload. `txLimit`≤100, `txPage` is 1-based.
+`chain=` returns that chain's native + token txs (TRON → TRX and
+USDT_TRON); `asset=` is exact; unknown values return `400`. Without
+filters the transactions section mixes all chains, newest first —
+each entry carries `asset` and `chain`.
 
 ## 4. Deposit → credit → webhook
 

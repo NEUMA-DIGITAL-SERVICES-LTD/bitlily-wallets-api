@@ -46,6 +46,25 @@ export class WalletQueryDto {
   @Min(1)
   @IsOptional()
   txPage?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Restrict the transactions section to one chain, e.g. TRON. ' +
+      'Only applies when include contains transactions.',
+  })
+  @IsString()
+  @IsOptional()
+  chain?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Restrict the transactions section to one asset code, e.g. ' +
+      'USDT_TRON. Only applies when include contains transactions. ' +
+      'Combinable with chain (asset implies its chain anyway).',
+  })
+  @IsString()
+  @IsOptional()
+  asset?: string;
 }
 
 export class GenerateAddressDto {

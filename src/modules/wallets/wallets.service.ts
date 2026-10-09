@@ -7,13 +7,13 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, FindOptionsWhere, Repository } from 'typeorm';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
-import { enabledAssets, getAsset } from '../../config/assets';
+import { ASSET_REGISTRY, enabledAssets, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
@@ -418,13 +418,17 @@ export class WalletsService {
   async getWalletView(
     id: string,
     appId: string,
-    include?: string,
-    txLimit = 20,
-    txPage = 1,
+    q: {
+      include?: string;
+      txLimit?: number;
+      txPage?: number;
+      chain?: string;
+      asset?: string;
+    },
   ) {
     const wallet = await this.getWalletOrThrow(id, appId);
     const inc = new Set(
-      (include ?? 'balances,addresses').split(',').map((s) => s.trim()).filter(Boolean),
+      (q.include ?? 'balances,addresses').split(',').map((s) => s.trim()).filter(Boolean),
     );
     const view: Record<string, unknown> = { ...wallet };
     if (inc.has('balances')) view.balances = await this.ledger.getBalances(id);
@@ -435,10 +439,26 @@ export class WalletsService {
       });
     }
     if (inc.has('transactions')) {
-      const limit = Math.min(Math.max(txLimit, 1), 100);
-      const page = Math.max(txPage, 1);
+      const limit = Math.min(Math.max(q.txLimit ?? 20, 1), 100);
+      const page = Math.max(q.txPage ?? 1, 1);
+      const where: FindOptionsWhere<Transaction> = { wallet: { id } };
+      if (q.asset) {
+        const asset = getAsset(q.asset);
+        if (!asset) throw new BadRequestException(`Unsupported asset: ${q.asset}`);
+        where.asset = asset.code;
+      }
+      if (q.chain) {
+        const chain = q.chain.toUpperCase();
+        const valid = new Set<string>(ASSET_REGISTRY.map((a) => a.chain));
+        if (!valid.has(chain)) {
+          throw new BadRequestException(
+            `Unsupported chain: ${q.chain} (supported: ${[...valid].join(', ')})`,
+          );
+        }
+        where.chain = chain;
+      }
       view.transactions = await this.txs.find({
-        where: { wallet: { id } },
+        where,
         order: { createdAt: 'DESC' },
         take: limit,
         skip: (page - 1) * limit,

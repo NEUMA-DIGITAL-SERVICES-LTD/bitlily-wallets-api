@@ -46,9 +46,9 @@ export class WalletsController {
     summary:
       'Aggregate wallet read — ?include=balances,addresses,transactions ' +
       'folds sections in (default: balances,addresses). Transactions are ' +
-      'paginated via txLimit/txPage.',
+      'paginated via txLimit/txPage and filterable via chain/asset.',
   })
   get(@Param('id') id: string, @Query() q: WalletQueryDto, @Req() req: any) {
-    return this.wallets.getWalletView(id, req.appId, q.include, q.txLimit, q.txPage);
+    return this.wallets.getWalletView(id, req.appId, q);
   }
 }
