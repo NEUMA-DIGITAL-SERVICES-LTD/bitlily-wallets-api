@@ -70,14 +70,16 @@ export class Transaction {
   @Column({ name: 'block_number', type: 'bigint', nullable: true })
   blockNumber: number;
 
-  /** Echo of the deposit address' client reference (order/invoice). */
+  /** Client reference (order/invoice/payout id). For outbound sends this
+   * is ALSO the idempotency boundary — unique per (wallet, reference),
+   * retries return the original row instead of double-debiting, and a
+   * reuse with a different payload is rejected at the API layer. */
   @Column({ nullable: true })
   reference: string;
 
   /**
-   * Caller-supplied idempotency key for outbound sends — partial unique
-   * index (wallet_id, idempotency_key) makes retries return the original
-   * row instead of double-debiting.
+   * Legacy caller-supplied idempotency key — superseded by `reference`
+   * as the dedupe token (UQ_tx_reference). Column kept for existing rows.
    */
   @Column({ name: 'idempotency_key', nullable: true })
   idempotencyKey: string;

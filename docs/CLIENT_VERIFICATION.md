@@ -121,13 +121,23 @@ is silently lost.
 ## 5. Withdrawal → broadcast → confirm
 
 ```bash
-curl -X POST $BASE/transactions -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"walletId":"<walletId>","asset":"TRX","toAddress":"<dest>","amount":"1","reference":"verify-1"}'
+curl -X POST $BASE/withdrawals -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"walletId":"<walletId>","asset":"TRX","toAddress":"<dest>","amount":"1","reference":"payout-42"}'
 ```
 
 Expected: `201` → `status:"pending"`. The KMS daemon signs within seconds;
 status flips `pending → confirmed` as chain confirmations land
-(`GET $BASE/transactions/<id>`). A `withdrawal.confirmed` webhook fires.
+(`GET $BASE/transactions/<id>` — same endpoint serves deposits AND
+withdrawals). A `withdrawal.confirmed` webhook fires.
+
+**`reference` IS the idempotency key** — unique per send within your app:
+
+- Same reference + same payload → returns the original transaction (safe
+  retry after timeouts — never a double-send).
+- Same reference + different payload → `409` — a reused reference is a
+  bug, surfaced loudly rather than silently returning an old send.
+- Omit it and every call sends fresh — **always send a unique reference
+  in production**.
 
 ## 6. Tenant isolation
 

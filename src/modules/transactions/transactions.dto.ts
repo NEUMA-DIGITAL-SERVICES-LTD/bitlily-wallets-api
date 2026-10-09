@@ -27,19 +27,19 @@ export class SendTransactionDto {
   @Matches(POSITIVE_DECIMAL, { message: 'amount must be a positive decimal' })
   amount: string;
 
-  @ApiPropertyOptional({ description: 'Client reference echoed on the record' })
-  @IsString()
-  @IsOptional()
-  reference?: string;
-
   @ApiPropertyOptional({
     description:
-      'Idempotency key — retries with the same (walletId, key) return the ' +
-      'original transaction instead of double-sending. REQUIRED in production.',
+      'Your reference (order/payout id) — echoed on the record AND the ' +
+      'idempotency boundary: unique per outbound send within your app. ' +
+      'A retry with the same reference and the same payload returns the ' +
+      'original transaction instead of double-sending; the same reference ' +
+      'with a DIFFERENT payload is rejected 409 — a reused reference is a ' +
+      'bug, not a retry. Omit it and every call sends fresh. REQUIRED in ' +
+      'production.',
   })
   @IsString()
   @IsOptional()
-  idempotencyKey?: string;
+  reference?: string;
 }
 
 export class EstimateFeeQueryDto {

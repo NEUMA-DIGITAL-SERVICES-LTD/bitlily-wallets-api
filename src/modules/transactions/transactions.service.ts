@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   Logger,
@@ -74,18 +75,32 @@ export class TransactionsService {
     });
     if (!account) throw new NotFoundException(`No ${asset.chain} account on wallet`);
 
-    // Idempotency: a retry after a client-side timeout must return the
-    // original row, not debit + broadcast a second time. The caller owns
-    // key uniqueness per wallet.
-    if (dto.idempotencyKey) {
+    // Idempotency: `reference` is THE dedupe key (scoped per app). A retry
+    // after a client-side timeout returns the original row instead of
+    // double-sending — but the same reference with a DIFFERENT payload is
+    // a 409: silently returning an old send on a reused reference would
+    // tell the caller funds moved that never did.
+    if (dto.reference) {
       const dupe = await this.txs.findOne({
         where: {
-          wallet: { id: dto.walletId },
+          wallet: { appId },
           direction: 'outbound',
-          idempotencyKey: dto.idempotencyKey,
+          reference: dto.reference,
         },
+        relations: ['wallet'],
       });
-      if (dupe) return dupe;
+      if (dupe) {
+        const samePayload =
+          dupe.asset === asset.code &&
+          dupe.address === dto.toAddress &&
+          Math.abs(parseFloat(dupe.amount) - amount) < 1e-12 &&
+          dupe.wallet.id === dto.walletId;
+        if (samePayload) return dupe;
+        throw new ConflictException(
+          `reference "${dto.reference}" was already used for a different ` +
+          `withdrawal (tx ${dupe.id}) — references must be unique per send`,
+        );
+      }
     }
 
     // Withdrawal policy — circuit breakers, applied before any debit.
@@ -133,23 +148,22 @@ export class TransactionsService {
             status: needsApproval ? 'requires_approval' : 'pending',
             requiredConfirmations: this.requiredConfirmations(asset.chain),
             reference: dto.reference,
-            idempotencyKey: dto.idempotencyKey,
           }),
         );
         await this.ledger.postEntry(em, account.wallet, t, 'withdrawal', dto.amount, 'debit');
         return t;
       });
     } catch (e) {
-      // Two concurrent first-sends with the same key: both pass the dupe
-      // check, the loser's INSERT hits UQ_tx_idempotency and its whole
-      // transaction (debit included) rolls back. Return the winner's row —
-      // that IS the idempotent response, not an error.
-      if (errCode(e) === '23505' && dto.idempotencyKey) {
+      // Two concurrent first-sends with the same reference on one wallet:
+      // both pass the dupe check, the loser's INSERT hits UQ_tx_reference
+      // and its whole transaction (debit included) rolls back. Return the
+      // winner's row — that IS the idempotent response, not an error.
+      if (errCode(e) === '23505' && dto.reference) {
         const winner = await this.txs.findOne({
           where: {
             wallet: { id: dto.walletId },
             direction: 'outbound',
-            idempotencyKey: dto.idempotencyKey,
+            reference: dto.reference,
           },
         });
         if (winner) return winner;

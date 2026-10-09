@@ -1,32 +1,32 @@
-import { Body, Controller, Get, Headers, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
 import { EstimateFeeQueryDto, SendTransactionDto } from './transactions.dto';
 import { RequireScope } from '../../common/api-key.guard';
 
-@ApiTags('transactions')
+@ApiTags('withdrawals')
 @ApiSecurity('x-api-key')
 @Controller('api/v1')
 export class TransactionsController {
   constructor(private readonly txs: TransactionsService) {}
 
   @RequireScope('wallet')
-  @Post('transactions')
-  @ApiOperation({ summary: 'Send a blockchain transaction (withdrawal)' })
-  send(
-    @Body() dto: SendTransactionDto,
-    @Req() req: any,
-    @Headers('idempotency-key') idempotencyKey?: string,
-  ) {
-    // Header wins (Stripe convention); body field kept for clients that
-    // can't set headers. Same dedupe semantics either way.
-    dto.idempotencyKey ??= idempotencyKey;
+  @Post('withdrawals')
+  @ApiOperation({
+    summary:
+      'Withdraw funds to an external address. `reference` (your payout/' +
+      'order id) is the idempotency key — same reference + same payload ' +
+      'returns the original transaction; same reference + different ' +
+      'payload is rejected 409.',
+  })
+  send(@Body() dto: SendTransactionDto, @Req() req: any) {
     return this.txs.send(dto, req.appId);
   }
 
   @RequireScope('wallet')
   @Get('transactions/:id')
-  @ApiOperation({ summary: 'Get transaction status' })
+  @ApiTags('transactions')
+  @ApiOperation({ summary: 'Get transaction status (deposits and withdrawals)' })
   get(@Param('id') id: string, @Req() req: any) {
     return this.txs.get(id, req.appId);
   }

@@ -127,13 +127,32 @@ describe('TransactionsService.send', () => {
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 
-  it('returns the existing row when the idempotency key was seen before', async () => {
-    const prior = { id: 'tx-orig', txid: '0xreal' };
+  it('returns the existing row when the reference was sent before with the same payload', async () => {
+    const prior = {
+      id: 'tx-orig', txid: '0xreal',
+      asset: 'ETH', address: dto.toAddress, amount: '0.01',
+      wallet: { id: 'w1', appId: 'default' },
+    };
     txs.findOne.mockResolvedValue(prior);
 
-    const tx = await service.send({ ...dto, idempotencyKey: 'k-1' }, 'default');
+    const tx = await service.send(dto, 'default');
 
     expect(tx).toBe(prior);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('409s when the reference was used with a DIFFERENT payload — reuse is a bug, not a retry', async () => {
+    const prior = {
+      id: 'tx-orig', txid: '0xreal',
+      asset: 'ETH', address: '0x' + 'cd'.repeat(20), amount: '0.5',
+      wallet: { id: 'w1', appId: 'default' },
+    };
+    txs.findOne.mockResolvedValue(prior);
+
+    await expect(service.send(dto, 'default')).rejects.toThrow(
+      /reference "payout-1" was already used/,
+    );
     expect(ledger.postEntry).not.toHaveBeenCalled();
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
