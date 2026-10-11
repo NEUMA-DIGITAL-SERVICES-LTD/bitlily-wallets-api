@@ -8,6 +8,8 @@ import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
 import { SweepService } from './sweep.service';
+import { SweepSchedulerService } from './sweep-scheduler.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 class SweepDto {
   @ApiProperty({ description: 'Deposit-address row id to sweep' })
@@ -35,8 +37,11 @@ export class SweepController {
 }
 
 @Module({
-  imports: [TypeOrmModule.forFeature([DepositAddress, CustodyAccount, Transaction])],
+  imports: [
+    TypeOrmModule.forFeature([DepositAddress, CustodyAccount, Transaction]),
+    NotificationsModule,
+  ],
   controllers: [SweepController],
-  providers: [SweepService],
+  providers: [SweepService, SweepSchedulerService],
 })
 export class SweepsModule {}

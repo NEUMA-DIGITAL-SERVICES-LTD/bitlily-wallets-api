@@ -49,8 +49,15 @@ export class SweepService {
    * Sweeps `asset` funds from a deposit address to the chain treasury.
    * Returns the broadcast txid(s) — the gas top-up send (if any) plus the
    * asset send. KMS mode only.
+   *
+   * `opts.maxAmount` caps the swept amount — the auto-scheduler passes the
+   * address's confirmed-credited total so a deposit still confirming can't
+   * be pulled into a spend (UTXO chains especially). Ops calls omit it.
    */
-  async sweepAddress(depositAddressId: string): Promise<{ txids: string[]; pendingKms?: string[] }> {
+  async sweepAddress(
+    depositAddressId: string,
+    opts?: { maxAmount?: string },
+  ): Promise<{ txids: string[]; pendingKms?: string[] }> {
     if (this.config.get('tatum.useKms') !== true) {
       throw new BadRequestException(
         'Sweeps require KMS signing — deposit addresses have no local keys. ' +
@@ -76,10 +83,14 @@ export class SweepService {
         0,
       ));
 
-    const balance = await this.provider.getAddressBalance(dep.address, asset);
-    if (parseFloat(balance) <= 0) {
+    const rawBalance = await this.provider.getAddressBalance(dep.address, asset);
+    if (parseFloat(rawBalance) <= 0) {
       throw new BadRequestException(`No ${asset.code} at ${dep.address}`);
     }
+    const balance =
+      opts?.maxAmount && parseFloat(opts.maxAmount) < parseFloat(rawBalance)
+        ? opts.maxAmount
+        : rawBalance;
 
     // In-flight guard — two concurrent sweeps would read the same balance
     // and double-send. A pending outbound row for this deposit is enough

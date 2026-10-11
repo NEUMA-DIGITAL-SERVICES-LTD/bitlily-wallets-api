@@ -57,6 +57,7 @@ Every event is a JSON POST:
 | \`withdrawal.rejected\` | An admin rejected it. |
 | \`withdrawal.reconcile_required\` | On-chain and ledger disagree — ops alert. |
 | \`treasury.gas_low\` | The treasury can't cover gas — ops alert. |
+| \`sweep.failed\` | Consolidating a deposit failed repeatedly — ops alert. |
 | \`reconciliation.divergence\` | Ledger and chain disagree — ops alert. |
 
 The two events that matter for your users: \`deposit.confirmed\` (money in,

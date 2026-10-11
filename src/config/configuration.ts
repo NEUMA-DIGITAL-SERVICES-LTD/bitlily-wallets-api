@@ -91,9 +91,24 @@ export const treasuryConfig = registerAs('treasury', () => {
   };
 });
 
-export const sweepConfig = registerAs('sweep', () => ({
-  gasTopUp: parseFloat(process.env.SWEEP_GAS_TOP_UP ?? '0.005'),
-}));
+export const sweepConfig = registerAs('sweep', () => {
+  let minBalance: Record<string, string> = {};
+  try { minBalance = process.env.SWEEP_MIN_BALANCE ? JSON.parse(process.env.SWEEP_MIN_BALANCE) : {}; }
+  catch { minBalance = {}; }
+  return {
+    gasTopUp: parseFloat(process.env.SWEEP_GAS_TOP_UP ?? '0.005'),
+    /** Automatic consolidation cron. Gated on KMS at runtime too — without
+     *  it the scheduler would just burn provider calls failing. */
+    autoEnabled: process.env.SWEEP_AUTO_ENABLED !== 'false',
+    /** Per-asset floor below which a sweep isn't worth its fee. JSON env:
+     *  SWEEP_MIN_BALANCE='{"BTC":"0.0005","TRX":"10"}' — absent = sweep any
+     *  confirmed balance. */
+    minBalance,
+    /** Max sweeps per 15-min cycle — bounds KMS/provider load and keeps a
+     *  hot loop from stampeding the treasury nonce on EVM. */
+    maxPerCycle: parseInt(process.env.SWEEP_MAX_PER_CYCLE ?? '20', 10),
+  };
+});
 
 export const confirmationsConfig = registerAs('confirmations', () => ({
   BTC: parseInt(process.env.CONFIRMATIONS_BTC ?? '2', 10),
