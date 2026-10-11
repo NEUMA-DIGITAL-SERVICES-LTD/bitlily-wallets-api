@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger, OnApplicationBootstrap } from '@nestjs/comm
 import { InjectEntityManager, InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, Like, Not, Repository } from 'typeorm';
 import { WebhookEvent } from '../../database/entities/webhook-event.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
@@ -253,7 +253,15 @@ export class WebhooksService implements OnApplicationBootstrap {
     }
 
     const pending = await this.txs.find({
-      where: { direction: 'inbound', status: 'pending' },
+      where: {
+        direction: 'inbound',
+        status: 'pending',
+        // 'poll:*' txids are poller-owned placeholders for unattributed
+        // balance deltas — getTransaction() can never resolve them (the
+        // provider 400s on the non-hash), and the poller swaps in the
+        // real txid once attribution resolves.
+        txid: Not(Like('poll:%')),
+      },
       relations: ['wallet'],
       take: 200,
     });

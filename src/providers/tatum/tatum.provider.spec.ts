@@ -102,6 +102,23 @@ describe('TatumProvider', () => {
     });
   });
 
+  describe('UTXO balances', () => {
+    it('incoming-outgoing is fixed-point — no IEEE-754 tail', async () => {
+      // 0.00210056 - 0.00209444 in IEEE-754 is 6.120000000000083e-6;
+      // a naive String() of that tail poisons the poller's delta math
+      // into a phantom sub-satoshi deposit.
+      const get = jest.fn().mockResolvedValue({
+        data: { incoming: '0.00210056', outgoing: '0.00209444' },
+      });
+      const p = makeProvider({ get });
+      const bal = await p.getAddressBalance('m-addr', {
+        ...BTC_ASSET, chain: 'LTC', code: 'LTC',
+      } as AssetDef);
+      expect(get).toHaveBeenCalledWith('/v3/litecoin/address/balance/m-addr');
+      expect(bal).toBe('0.00000612');
+    });
+  });
+
   describe('Tron transaction normalization', () => {
     // Real shape returned by /v3/tron/transaction for a native send —
     // camelCase `rawData` (NOT `raw_data`), hex to_address + base58 fields.

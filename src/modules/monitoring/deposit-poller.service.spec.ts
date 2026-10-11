@@ -146,6 +146,24 @@ describe('DepositPollerService', () => {
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 
+  it('ignores sub-precision float noise — no phantom poll:* zombie row', async () => {
+    // Provider balance strings can carry IEEE-754 tails: '…000000084'
+    // minus credited '…000000000' is 8.4e-20 — positive but ZERO at BTC's
+    // 8 decimals. Creating a row for it mints a 0-amount pending 'poll:*'
+    // record that the confirm sweeper can never resolve (seen live:
+    // provider 400 spam every cycle on the unresolvable synthetic txid).
+    provider.getAddressBalance.mockResolvedValue('0.000006120000000000084');
+    const depCredited = { ...dep, creditedAmount: '0.000006120000000000' };
+    addresses.find.mockResolvedValue([depCredited]);
+
+    await service.poll();
+
+    expect(em.transaction).not.toHaveBeenCalled();
+    expect(m.create.mock.calls.filter((c: any[]) => c[0] === Transaction)).toHaveLength(0);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
   it('records UTXO deposit as pending below confirmation threshold, no ledger credit', async () => {
     provider.getAddressBalance.mockResolvedValue('0.001');
     provider.getAddressTransactions.mockResolvedValue([{
@@ -236,7 +254,10 @@ describe('DepositPollerService', () => {
 
     await service.poll();
 
-    expect(addresses.update).toHaveBeenCalledWith('dep1', { creditedAmount: '0.1' });
+    // The stored baseline is precision-normalized — provider strings can
+    // carry float noise, and persisting the raw value would poison the
+    // next delta comparison the same way.
+    expect(addresses.update).toHaveBeenCalledWith('dep1', { creditedAmount: '0.10000000' });
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 

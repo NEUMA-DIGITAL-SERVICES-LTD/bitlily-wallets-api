@@ -144,14 +144,21 @@ export class DepositPollerService {
       });
       dep.creditedAmount = creditedAmount;
 
-      const delta = parseFloat(observed) - parseFloat(dep.creditedAmount);
+      // Normalize at the asset's decimal precision BEFORE comparing —
+      // provider balance strings can carry float noise (~1e-20 tails)
+      // that reads as a phantom positive delta and would mint a
+      // zero-amount 'poll:*' row that can never resolve.
+      const delta = parseFloat(
+        (parseFloat(observed) - parseFloat(dep.creditedAmount)).toFixed(asset.decimals),
+      );
       if (delta < 0) {
         // Balance dropped below our credited baseline — funds left the
         // address (sweep, withdrawal). Rebaseline so the next deposit
         // credits its full amount instead of the shrunken delta.
-        await this.addresses.update(dep.id, { creditedAmount: observed });
+        const baseline = parseFloat(observed).toFixed(asset.decimals);
+        await this.addresses.update(dep.id, { creditedAmount: baseline });
         this.logger.log(
-          `Rebaselined ${dep.address} ${asset.code}: credited ${dep.creditedAmount} → ${observed}`,
+          `Rebaselined ${dep.address} ${asset.code}: credited ${dep.creditedAmount} → ${baseline}`,
         );
         return;
       }
@@ -219,7 +226,9 @@ export class DepositPollerService {
           where: { id: dep.id },
           lock: { mode: 'pessimistic_write' },
         });
-        const freshDelta = parseFloat(observed) - parseFloat(fresh.creditedAmount);
+        const freshDelta = parseFloat(
+          (parseFloat(observed) - parseFloat(fresh.creditedAmount)).toFixed(asset.decimals),
+        );
         if (freshDelta <= 0) return null;
 
         // A pending record from an earlier poll shares this txid — advance

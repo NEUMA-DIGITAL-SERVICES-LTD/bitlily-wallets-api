@@ -189,13 +189,16 @@ export class TatumProvider implements BlockchainProvider {
       const { data } = await this.http.get(`/v3/${path}/address/balance/${address}`);
       const incoming = parseFloat(data.incoming ?? '0');
       const outgoing = parseFloat(data.outgoing ?? '0');
-      return String(incoming - outgoing);
+      // toFixed kills IEEE-754 tails (incoming-outgoing can yield
+      // "0.000006120000000000084") — noisy strings poison the poller's
+      // delta math into phantom sub-satoshi "deposits".
+      return (incoming - outgoing).toFixed(asset.decimals);
     }
     if (asset.chain === 'TRON') {
       // TRON's native balance lives on the account object (sun units),
       // not the /account/balance path — that route 404s.
       const data = await this.tronAccount(address);
-      return String(Number(data?.balance ?? 0) / 1e6);
+      return fromRaw(String(data?.balance ?? '0'), asset.decimals);
     }
     const { data } = await this.http.get(`/v3/${path}/account/balance/${address}`);
     return String(data.balance ?? data ?? '0');
