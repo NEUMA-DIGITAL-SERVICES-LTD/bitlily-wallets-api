@@ -66,6 +66,16 @@ export class WalletQueryDto {
   @IsString()
   @IsOptional()
   asset?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Look up a transaction by YOUR reference (order/payout id) — the ' +
+      'check-before-retry path after a 409 or a timed-out send. Only ' +
+      'applies when include contains transactions.',
+  })
+  @IsString()
+  @IsOptional()
+  reference?: string;
 }
 
 export class GenerateAddressDto {

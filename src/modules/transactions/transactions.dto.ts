@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, IsUUID, Matches, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 /**
  * Strict positive-decimal amount. IsNumberString allows '-5', '+5', '.5' —
@@ -9,9 +9,10 @@ import { IsNotEmpty, IsOptional, IsString, IsUUID, Matches, MaxLength } from 'cl
 const POSITIVE_DECIMAL = /^\d+(\.\d{1,18})?$/;
 
 export class SendTransactionDto {
-  @ApiProperty({ description: 'Wallet the funds are drawn from' })
-  @IsUUID()
-  walletId: string;
+  @ApiProperty({ description: 'The user ID in YOUR application — funds are drawn from that user\'s wallet' })
+  @IsString()
+  @IsNotEmpty()
+  externalUserId: string;
 
   @ApiProperty({ description: 'Asset code, e.g. BTC, USDT_TRON' })
   @IsString()

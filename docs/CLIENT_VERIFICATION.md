@@ -6,16 +6,18 @@ expected to pass; anything that doesn't is a finding, not a retry.
 Base URL: `https://<staging-host>/api/v1` — all calls need header
 `X-API-Key: <your tenant key>`.
 
-The client-facing wallet surface is exactly **two** routes:
+The client-facing wallet surface is exactly **two** routes, keyed by
+**your** `externalUserId` — the service-generated `id` is internal and
+never required:
 
 | Route | Purpose |
 |---|---|
 | `POST /wallets` | Get-or-create the user's wallet AND provision permanent deposit addresses |
-| `GET /wallets/{id}` (or `GET /wallets?externalUserId=`) | Aggregate read — `?include=` folds in balances, addresses, transactions |
+| `GET /wallets/{externalUserId}` | Aggregate read — `?include=` folds in balances, addresses, transactions |
 
 Everything else (per-address generation, balance/tx sub-resources,
-re-watch) was deliberately folded in or moved to ops. A `404` on the old
-sub-routes is expected.
+re-watch, UUID/query lookups) was deliberately folded in or moved to
+ops. A `404` on the old sub-routes is expected.
 
 ## 1. Create a wallet — all permanent addresses in one call
 
@@ -61,33 +63,37 @@ curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/js
   -d '{"externalUserId":"verify-user-1","ensure":["SOL"]}'
 
 # Pure read by YOUR user id — never creates, 404 if absent:
-curl "$BASE/wallets?externalUserId=verify-user-1" -H "X-API-Key: $KEY"
+curl "$BASE/wallets/verify-user-1" -H "X-API-Key: $KEY"
 ```
 
 Expected: same `id` every time; `addresses` always returns the **full**
 permanent set (existing + newly provisioned). If a new chain is enabled
 later, an existing wallet's next `POST /wallets` mints its address then —
-first touch on a new chain just works.
+first touch on a new chain just works. The `id` field in responses is the
+internal wallet UUID — keep it for support tickets if you like, but every
+route addresses the wallet by `externalUserId`.
 
 ## 3. Read the wallet aggregate
 
 ```bash
 # Default view (balances + addresses):
-curl $BASE/wallets/<walletId> -H "X-API-Key: $KEY"
+curl $BASE/wallets/verify-user-1 -H "X-API-Key: $KEY"
 
 # Fold in transactions (paginated):
-curl "$BASE/wallets/<walletId>?include=balances,addresses,transactions&txLimit=50&txPage=1" \
+curl "$BASE/wallets/verify-user-1?include=balances,addresses,transactions&txLimit=50&txPage=1" \
   -H "X-API-Key: $KEY"
 
-# Narrow transactions to a chain or asset:
-curl "$BASE/wallets/<walletId>?include=transactions&chain=TRON" -H "X-API-Key: $KEY"
-curl "$BASE/wallets/<walletId>?include=transactions&asset=USDT_TRON" -H "X-API-Key: $KEY"
+# Narrow transactions to a chain, asset, or your reference:
+curl "$BASE/wallets/verify-user-1?include=transactions&chain=TRON" -H "X-API-Key: $KEY"
+curl "$BASE/wallets/verify-user-1?include=transactions&asset=USDT_TRON" -H "X-API-Key: $KEY"
+curl "$BASE/wallets/verify-user-1?include=transactions&reference=payout-42" -H "X-API-Key: $KEY"
 ```
 
 Expected: `include` controls which sections appear; sections not
 requested stay out of the payload. `txLimit`≤100, `txPage` is 1-based.
 `chain=` returns that chain's native + token txs (TRON → TRX and
-USDT_TRON); `asset=` is exact; unknown values return `400`. Without
+USDT_TRON); `asset=` is exact; `reference=` looks up your send/lookup
+reference. Unknown chain/asset values return `400`. Without
 filters the transactions section mixes all chains, newest first —
 each entry carries `asset` and `chain`.
 
@@ -97,7 +103,7 @@ Send a small amount of the asset to the address (any external wallet, or
 ask ops to seed). Within ~2 poll cycles (≤ ~4 min):
 
 ```bash
-curl "$BASE/wallets/<walletId>?include=balances,transactions" -H "X-API-Key: $KEY"
+curl "$BASE/wallets/verify-user-1?include=balances,transactions" -H "X-API-Key: $KEY"
 ```
 
 Expected: balance reflects the deposit; a `transactions` entry shows
@@ -122,32 +128,56 @@ is silently lost.
 
 ```bash
 curl -X POST $BASE/withdrawals -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"walletId":"<walletId>","asset":"TRX","toAddress":"<dest>","amount":"1","reference":"payout-42"}'
+  -d '{"externalUserId":"verify-user-1","asset":"TRX","toAddress":"<dest>","amount":"1","reference":"payout-42"}'
 ```
 
 Expected: `201` → `status:"pending"`. The KMS daemon signs within seconds;
 status flips `pending → confirmed` as chain confirmations land
-(`GET $BASE/transactions/<id>` — same endpoint serves deposits AND
-withdrawals). A `withdrawal.confirmed` webhook fires.
+(`GET $BASE/transactions/<id>` — the single retrieval endpoint; it serves
+deposits AND withdrawals). A `withdrawal.confirmed` webhook fires.
 
-**`reference` IS the idempotency key** — unique per send within your app:
+**`reference` is strictly unique per send** — any reuse is an error:
 
-- Same reference + same payload → returns the original transaction (safe
-  retry after timeouts — never a double-send).
-- Same reference + different payload → `409` — a reused reference is a
-  bug, surfaced loudly rather than silently returning an old send.
-- Omit it and every call sends fresh — **always send a unique reference
-  in production**.
+- **Every** repeat of an existing reference returns `409` — even an
+  identical retry. The error names the tx id + status so you can fetch
+  it via `GET /transactions/<id>` or
+  `GET /wallets/{externalUserId}?include=transactions&reference=<ref>`.
+- Never infer a send succeeded from a network response alone — after a
+  timeout, look up the reference first, then send with a **new**
+  reference if nothing exists.
+- Omit `reference` and every call sends fresh — **always send one in
+  production**.
+
+### Where the money actually lives (read once)
+
+Balances are **not** read from the blockchain at withdrawal time. The
+service keeps a double-entry ledger in PostgreSQL — one balance per
+(wallet, asset):
+
+1. Deposit lands on the user's address → poller detects it → confirms
+   on-chain → **ledger credit** → `deposit.confirmed` webhook.
+2. Withdrawal call → checks **ledger balance** for that asset →
+   **ledger debit + transaction row in the same DB transaction** →
+   KMS signs → broadcast → real txid recorded → confirmations tracked
+   to `confirmed`.
+3. Broadcast fails → debit is **reversed** and the tx marks `failed`
+   (balance restored — verified in tests).
+4. Chain balances are monitored for reconciliation, but the ledger is
+   the **only** spend authorization source — a wallet cannot withdraw
+   more than its confirmed ledger credits minus its debits.
 
 ## 6. Tenant isolation
 
-Ask ops for a wallet ID from a *different* tenant, then:
+Ask ops for an `externalUserId` registered under a *different* tenant,
+then:
 
 ```bash
-curl $BASE/wallets/<foreign-wallet-id> -H "X-API-Key: $KEY"
+curl $BASE/wallets/<foreign-externalUserId> -H "X-API-Key: $KEY"
 ```
 
-Expected: `404` — your key cannot see another app's data.
+Expected: `404` — your key cannot see another app's data, including its
+external IDs. Same for `GET /transactions/<foreign-tx-id>` and a
+`POST /withdrawals` naming another app's user.
 
 ## 7. Registering additional apps
 

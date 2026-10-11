@@ -7,7 +7,7 @@ import { RequireScope } from '../../common/api-key.guard';
 @ApiTags('withdrawals')
 @ApiSecurity('x-api-key')
 @Controller('api/v1')
-export class TransactionsController {
+export class WithdrawalsController {
   constructor(private readonly txs: TransactionsService) {}
 
   @RequireScope('wallet')
@@ -15,17 +15,23 @@ export class TransactionsController {
   @ApiOperation({
     summary:
       'Withdraw funds to an external address. `reference` (your payout/' +
-      'order id) is the idempotency key — same reference + same payload ' +
-      'returns the original transaction; same reference + different ' +
-      'payload is rejected 409.',
+      'order id) must be unique per send in your app — a repeat is ' +
+      'rejected 409 with the existing transaction\'s id; fetch it via ' +
+      'GET /transactions/{id} or the wallet\'s transactions view.',
   })
   send(@Body() dto: SendTransactionDto, @Req() req: any) {
     return this.txs.send(dto, req.appId);
   }
+}
+
+@ApiTags('transactions')
+@ApiSecurity('x-api-key')
+@Controller('api/v1')
+export class TransactionsController {
+  constructor(private readonly txs: TransactionsService) {}
 
   @RequireScope('wallet')
   @Get('transactions/:id')
-  @ApiTags('transactions')
   @ApiOperation({ summary: 'Get transaction status (deposits and withdrawals)' })
   get(@Param('id') id: string, @Req() req: any) {
     return this.txs.get(id, req.appId);

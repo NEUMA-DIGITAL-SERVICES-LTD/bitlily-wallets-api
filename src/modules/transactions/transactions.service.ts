@@ -31,6 +31,7 @@ export class TransactionsService {
 
   constructor(
     @InjectRepository(Transaction) private readonly txs: Repository<Transaction>,
+    @InjectRepository(Wallet) private readonly wallets: Repository<Wallet>,
     @InjectRepository(WalletAccount) private readonly accounts: Repository<WalletAccount>,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
     private readonly ledger: LedgerService,
@@ -67,33 +68,35 @@ export class TransactionsService {
       );
     }
 
+    // The wallet is addressed by the client's own user id — the API never
+    // exposes our internal wallet uuid in request contracts.
+    const wallet = await this.wallets.findOne({
+      where: { externalUserId: dto.externalUserId, appId },
+    });
+    if (!wallet) {
+      throw new NotFoundException(`No wallet for externalUserId ${dto.externalUserId}`);
+    }
+
     // Accounts are per-chain — a token send signs via its chain's account.
-    // The appId scope is the tenant boundary: another app's walletId 404s here.
     const account = await this.accounts.findOne({
-      where: { wallet: { id: dto.walletId, appId }, chain: asset.chain },
+      where: { wallet: { id: wallet.id, appId }, chain: asset.chain },
       relations: ['wallet'],
     });
     if (!account) throw new NotFoundException(`No ${asset.chain} account on wallet`);
 
-    // Idempotency: `reference` is THE dedupe key (scoped per app). A retry
-    // after a client-side timeout returns the original row instead of
-    // double-sending — but the same reference with a DIFFERENT payload is
-    // a 409: silently returning an old send on a reused reference would
-    // tell the caller funds moved that never did.
+    // reference uniqueness is a HARD constraint: any outbound tx in this
+    // app already carrying it → 409, whatever the payload. The client
+    // check-before-retry flow reads the tx via the transactions endpoint —
+    // this API never silently returns an old send as if it were new.
     if (dto.reference) {
       const dupe = await this.txs.findOne({
-        where: {
-          wallet: { appId },
-          direction: 'outbound',
-          reference: dto.reference,
-        },
+        where: { wallet: { appId }, direction: 'outbound', reference: dto.reference },
         relations: ['wallet'],
       });
       if (dupe) {
-        if (this.sameWithdrawalPayload(dupe, dto, asset.code)) return dupe;
         throw new ConflictException(
-          `reference "${dto.reference}" was already used for a different ` +
-          `withdrawal (tx ${dupe.id}) — references must be unique per send`,
+          `reference "${dto.reference}" already used by transaction ${dupe.id} ` +
+          `(status ${dupe.status})`,
         );
       }
     }
@@ -125,7 +128,7 @@ export class TransactionsService {
           where: { id: account.wallet.id },
           lock: { mode: 'pessimistic_write' },
         });
-        const balance = await this.ledger.getBalance(dto.walletId, asset.code);
+        const balance = await this.ledger.getBalance(wallet.id, asset.code);
         if (parseFloat(balance) < amount) {
           throw new BadRequestException(
             `Insufficient ${asset.code} balance: have ${balance}, need ${dto.amount}`,
@@ -154,23 +157,17 @@ export class TransactionsService {
       // and its whole transaction (debit included) rolls back. Return the
       // winner's row — that IS the idempotent response, not an error.
       if (errCode(e) === '23505' && dto.reference) {
+        // Lost a concurrent race under the same reference — the winner's
+        // tx already exists; the loser must see the same loud 409 any
+        // other duplicate gets.
         const winner = await this.txs.findOne({
-          where: {
-            wallet: { id: dto.walletId },
-            direction: 'outbound',
-            reference: dto.reference,
-          },
+          where: { direction: 'outbound', reference: dto.reference, wallet: { appId } },
           relations: ['wallet'],
         });
-        if (winner) {
-          // The winner may be a DIFFERENT payload under the same reference —
-          // returning it would tell the caller funds moved that never did.
-          if (this.sameWithdrawalPayload(winner, dto, asset.code)) return winner;
-          throw new ConflictException(
-            `reference "${dto.reference}" was already used for a different ` +
-            `withdrawal (tx ${winner.id}) — references must be unique per send`,
-          );
-        }
+        throw new ConflictException(
+          `reference "${dto.reference}" already used` +
+          (winner ? ` by transaction ${winner.id} (status ${winner.status})` : ''),
+        );
       }
       throw e;
     }
@@ -288,39 +285,6 @@ export class TransactionsService {
     tx.status = 'rejected';
     await this.notifier.notify('withdrawal.rejected', tx);
     return tx;
-  }
-
-  /**
-   * Same-reference dedupe must only fire for the SAME logical send —
-   * wallet, asset, destination and amount all equal. Any difference means
-   * the caller reused a reference for a new send (a bug worth a loud 409,
-   * not a silent return of somebody else's tx).
-   */
-  private sameWithdrawalPayload(
-    tx: Transaction,
-    dto: SendTransactionDto,
-    assetCode: string,
-  ): boolean {
-    return (
-      tx.asset === assetCode &&
-      tx.address === dto.toAddress &&
-      tx.wallet.id === dto.walletId &&
-      this.sameAmount(tx.amount, dto.amount)
-    );
-  }
-
-  /**
-   * Decimal-string amount equality — float compare is unsafe at 18-decimal
-   * token precision (|1e-18 − 2e-18| < ε would "match" different amounts).
-   * Normalizes instead: BigInt integer part + trailing-zero-stripped
-   * fraction, so '1', '1.0' and '1.000000000000000000' compare equal.
-   */
-  private sameAmount(a: string, b: string): boolean {
-    const norm = (s: string) => {
-      const [i, f = ''] = s.trim().split('.');
-      return `${BigInt(i || '0')}.${f.replace(/0+$/, '')}`;
-    };
-    return norm(a) === norm(b);
   }
 
   async get(id: string, appId: string): Promise<Transaction> {

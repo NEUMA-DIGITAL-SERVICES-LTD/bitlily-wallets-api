@@ -15,7 +15,7 @@ describe('TransactionsService.send', () => {
   // Valid-format address — the service rejects implausible destinations
   // before any ledger movement.
   const dto = {
-    walletId: 'w1',
+    externalUserId: 'user-1',
     asset: 'ETH',
     toAddress: '0x' + 'ab'.repeat(20),
     amount: '0.01',
@@ -24,6 +24,7 @@ describe('TransactionsService.send', () => {
 
   let service: TransactionsService;
   let txs: any;
+  let wallets: any;
   let accounts: any;
   let provider: any;
   let ledger: any;
@@ -39,6 +40,7 @@ describe('TransactionsService.send', () => {
       findOneOrFail: jest.fn().mockResolvedValue(wallet),
     };
     txs = { update: jest.fn(), findOne: jest.fn().mockResolvedValue(null) };
+    wallets = { findOne: jest.fn().mockResolvedValue(wallet) };
     accounts = { findOne: jest.fn().mockResolvedValue(account) };
     provider = { sendTransaction: jest.fn() };
     ledger = {
@@ -53,7 +55,7 @@ describe('TransactionsService.send', () => {
       }),
     };
     service = new TransactionsService(
-      txs, accounts, provider, ledger, notifier,
+      txs, wallets, accounts, provider, ledger, notifier,
       { get: jest.fn().mockReturnValue({}) } as any,
       dataSource,
     );
@@ -127,80 +129,51 @@ describe('TransactionsService.send', () => {
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 
-  it('returns the existing row when the reference was sent before with the same payload', async () => {
+  it('409s ANY repeat of a used reference — the hard-uniqueness contract', async () => {
     const prior = {
       id: 'tx-orig', txid: '0xreal',
       asset: 'ETH', address: dto.toAddress, amount: '0.01',
-      wallet: { id: 'w1', appId: 'default' },
-    };
-    txs.findOne.mockResolvedValue(prior);
-
-    const tx = await service.send(dto, 'default');
-
-    expect(tx).toBe(prior);
-    expect(ledger.postEntry).not.toHaveBeenCalled();
-    expect(provider.sendTransaction).not.toHaveBeenCalled();
-  });
-
-  it('409s when the reference was used with a DIFFERENT payload — reuse is a bug, not a retry', async () => {
-    const prior = {
-      id: 'tx-orig', txid: '0xreal',
-      asset: 'ETH', address: '0x' + 'cd'.repeat(20), amount: '0.5',
-      wallet: { id: 'w1', appId: 'default' },
+      wallet: { id: 'w1', appId: 'default' }, status: 'confirmed',
     };
     txs.findOne.mockResolvedValue(prior);
 
     await expect(service.send(dto, 'default')).rejects.toThrow(
-      /reference "payout-1" was already used/,
+      /reference "payout-1" already used by transaction tx-orig/,
     );
     expect(ledger.postEntry).not.toHaveBeenCalled();
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
-  it('loses the concurrent race to a DIFFERENT payload under the same reference → 409, not the winner\'s tx', async () => {
-    // Both sends pass the dupe check; loser hits UQ_tx_reference. Returning
-    // the winner unconditionally would claim a send that never happened.
+  it('loses the concurrent race under a used reference → 409 naming the winner', async () => {
+    // Both sends pass the dupe check; loser hits UQ_tx_reference — it must
+    // see the same loud 409 any other duplicate gets, never the winner.
     txs.findOne
       .mockResolvedValueOnce(null) // dupe lookup — no prior row
-      .mockResolvedValueOnce({     // winner after the 23505 — different amount
-        id: 'tx-winner', txid: '0xreal',
-        asset: 'ETH', address: dto.toAddress, amount: '9.0',
+      .mockResolvedValueOnce({     // winner after the 23505
+        id: 'tx-winner', txid: '0xreal', status: 'pending',
         wallet: { id: 'w1', appId: 'default' },
       });
     dataSource.transaction.mockRejectedValue({ code: '23505' });
 
     await expect(service.send(dto, 'default')).rejects.toThrow(
-      /reference "payout-1" was already used/,
+      /reference "payout-1" already used by transaction tx-winner/,
     );
   });
 
-  it('loses the concurrent race to the SAME payload → returns the winner (true retry)', async () => {
-    const winner = {
-      id: 'tx-winner', txid: '0xreal',
-      asset: 'ETH', address: dto.toAddress, amount: '0.010000000000000000',
-      wallet: { id: 'w1', appId: 'default' },
-    };
-    txs.findOne
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(winner);
-    dataSource.transaction.mockRejectedValue({ code: '23505' });
-
-    // '0.01' vs stored '0.010000000000000000' — exact decimal normalization.
-    await expect(service.send(dto, 'default')).resolves.toBe(winner);
-  });
-
-  it('scopes the account lookup by tenant — foreign walletId finds nothing', async () => {
-    // The where clause carries both id and appId; with a foreign appId the
-    // DB returns nothing, so emulate that (the mock is otherwise honest
+  it('scopes the wallet lookup by tenant — foreign externalUserId finds nothing', async () => {
+    // The where clause carries appId; with a foreign tenant's key the DB
+    // returns nothing, so emulate that (the mock is otherwise honest
     // regardless of the clause).
-    accounts.findOne.mockImplementation(({ where }: any) =>
-      where.wallet.appId === 'default' ? account : null,
+    wallets.findOne.mockImplementation(({ where }: any) =>
+      where.appId === 'default' ? wallet : null,
     );
 
-    await expect(service.send(dto, 'other-app')).rejects.toThrow(/No ETH account/);
-    expect(accounts.findOne).toHaveBeenCalledWith(
+    await expect(service.send(dto, 'other-app')).rejects.toThrow(
+      /No wallet for externalUserId/,
+    );
+    expect(wallets.findOne).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { wallet: { id: 'w1', appId: 'other-app' }, chain: 'ETH' },
+        where: { externalUserId: 'user-1', appId: 'other-app' },
       }),
     );
     expect(ledger.postEntry).not.toHaveBeenCalled();

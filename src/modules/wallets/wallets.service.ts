@@ -565,6 +565,7 @@ export class WalletsService {
       txPage?: number;
       chain?: string;
       asset?: string;
+      reference?: string;
     },
   ) {
     const wallet = await this.getWalletOrThrow(id, appId);
@@ -595,6 +596,7 @@ export class WalletsService {
         }
         where.chain = chain;
       }
+      if (q.reference) where.reference = q.reference;
       view.transactions = await this.txs.find({
         where,
         order: { createdAt: 'DESC' },
