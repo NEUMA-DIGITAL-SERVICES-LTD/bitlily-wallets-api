@@ -272,6 +272,13 @@ wrong asset to a watched address, ops re-arms polling via
 `POST /admin/wallets/<walletId>/watch` (admin-gated). This is operator
 tooling — your app never calls it; raise it with ops when it happens.
 
+**Disaster-recovery note (ops):** deposit addresses derive from a
+monotonic per-chain index — the same wallet recreated in the same order
+gets the same addresses, and the poller re-credits real on-chain
+balances it finds there (that IS the recovery mechanism). On a rebuild,
+recreate wallets in **original creation order** or users inherit each
+other's addresses and balances.
+
 ## Known boundary — SOL deposits
 
 SOL shares one custody base address across wallets, so per-user SOL
