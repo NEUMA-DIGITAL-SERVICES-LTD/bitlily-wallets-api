@@ -14,14 +14,14 @@ import { Transaction } from '../../database/entities/transaction.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
-import { AssetDef, getAsset } from '../../config/assets';
+import { ASSET_REGISTRY, AssetDef, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
 } from '../../providers/provider.interface';
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
-import { SendTransactionDto } from './transactions.dto';
+import { ListTransactionsDto, SendTransactionDto } from './transactions.dto';
 import { errCode, errMsg } from '../../common/errors';
 import { isPlausibleAddress } from '../../common/address-validation';
 
@@ -293,6 +293,60 @@ export class TransactionsService {
       throw new NotFoundException(`Transaction ${id} not found`);
     }
     return tx;
+  }
+
+  /**
+   * App-wide transaction feed — everything the tenant's key can see,
+   * flattened. Internal consolidation rows (sweeps, gas pumps) are excluded:
+   * they're custody plumbing, not user activity, and would read as phantom
+   * outbound sends in a client feed. Each row carries externalUserId so the
+   * caller can attribute txs to their own users without joining wallets.
+   * `raw` (provider payloads, KMS request ids) stays off the wire.
+   */
+  async listForApp(appId: string, q: ListTransactionsDto) {
+    const limit = Math.min(Math.max(q.limit ?? 20, 1), 100);
+    const page = Math.max(q.page ?? 1, 1);
+
+    const qb = this.txs
+      .createQueryBuilder('t')
+      .innerJoin('t.wallet', 'w')
+      .addSelect('w.externalUserId')
+      .where('w.appId = :appId', { appId })
+      .andWhere(`t.raw ->> 'internal' IS NULL`)
+      .orderBy('t.createdAt', 'DESC')
+      .addOrderBy('t.id', 'DESC')
+      .take(limit)
+      .skip((page - 1) * limit);
+
+    if (q.direction) qb.andWhere('t.direction = :direction', { direction: q.direction });
+    if (q.status) qb.andWhere('t.status = :status', { status: q.status });
+    if (q.asset) {
+      const asset = getAsset(q.asset);
+      if (!asset) throw new BadRequestException(`Unsupported asset: ${q.asset}`);
+      qb.andWhere('t.asset = :asset', { asset: asset.code });
+    }
+    if (q.chain) {
+      const chain = q.chain.toUpperCase();
+      const valid = new Set<string>(ASSET_REGISTRY.map((a) => a.chain));
+      if (!valid.has(chain)) {
+        throw new BadRequestException(
+          `Unsupported chain: ${q.chain} (supported: ${[...valid].join(', ')})`,
+        );
+      }
+      qb.andWhere('t.chain = :chain', { chain });
+    }
+    if (q.externalUserId) {
+      qb.andWhere('w.externalUserId = :externalUserId', { externalUserId: q.externalUserId });
+    }
+    if (q.reference) qb.andWhere('t.reference = :reference', { reference: q.reference });
+    if (q.txid) qb.andWhere('t.txid = :txid', { txid: q.txid });
+
+    const [rows, total] = await qb.getManyAndCount();
+    const data = rows.map(({ raw: _r, wallet, ...t }) => ({
+      ...t,
+      externalUserId: wallet?.externalUserId,
+    }));
+    return { data, total, page, limit };
   }
 
   async estimateFee(assetCode: string, toAddress: string, amount: string) {

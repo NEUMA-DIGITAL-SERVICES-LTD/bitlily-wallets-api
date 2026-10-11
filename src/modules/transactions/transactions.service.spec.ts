@@ -186,3 +186,135 @@ describe('TransactionsService.send', () => {
     await expect(service.get('tx-1', 'default')).resolves.toBeDefined();
   });
 });
+
+/**
+ * The app-wide feed's contract: the tenant boundary is the join on
+ * wallet.appId (never a client-supplied value), internal custody rows are
+ * always excluded, pagination is bounded, and the wire shape drops `raw`
+ * while flattening externalUserId onto each row.
+ */
+describe('TransactionsService.listForApp', () => {
+  let service: TransactionsService;
+  let qb: any;
+  let txs: any;
+
+  const row = (over: any = {}) => ({
+    id: 'tx-1',
+    direction: 'inbound',
+    chain: 'TRON',
+    asset: 'TRX',
+    txid: 'abc123',
+    address: 'Txyz',
+    amount: '5',
+    fee: null,
+    status: 'confirmed',
+    confirmations: 20,
+    requiredConfirmations: 1,
+    blockNumber: 100,
+    reference: null,
+    idempotencyKey: null,
+    raw: { provider: 'tatum', secret: 'stuff' },
+    wallet: { id: 'w1', externalUserId: 'user-1' },
+    createdAt: new Date('2025-01-01'),
+    updatedAt: new Date('2025-01-01'),
+    ...over,
+  });
+
+  beforeEach(() => {
+    const calls: any = { andWheres: [], wheres: [] };
+    qb = {
+      calls,
+      innerJoin: jest.fn(() => qb),
+      addSelect: jest.fn(() => qb),
+      where: jest.fn((expr: string, params: any) => {
+        calls.wheres.push({ expr, params });
+        return qb;
+      }),
+      andWhere: jest.fn((expr: string, params?: any) => {
+        calls.andWheres.push({ expr, params });
+        return qb;
+      }),
+      orderBy: jest.fn(() => qb),
+      addOrderBy: jest.fn(() => qb),
+      take: jest.fn(() => qb),
+      skip: jest.fn(() => qb),
+      getManyAndCount: jest.fn(async () => [[row()], 1]),
+    };
+    txs = { createQueryBuilder: jest.fn(() => qb) };
+    service = new TransactionsService(
+      txs, {} as any, {} as any, {} as any, {} as any, {} as any,
+      { get: jest.fn().mockReturnValue({}) } as any,
+      {} as any,
+    );
+  });
+
+  it('scopes to the caller tenant and always excludes internal rows', async () => {
+    await service.listForApp('acme', {} as any);
+    expect(qb.where).toHaveBeenCalledWith('w.appId = :appId', { appId: 'acme' });
+    expect(qb.calls.andWheres).toContainEqual(
+      expect.objectContaining({ expr: `t.raw ->> 'internal' IS NULL` }),
+    );
+  });
+
+  it('defaults page=1 limit=20, caps limit at 100, and offsets pages', async () => {
+    await service.listForApp('a', {} as any);
+    expect(qb.take).toHaveBeenLastCalledWith(20);
+    expect(qb.skip).toHaveBeenLastCalledWith(0);
+
+    await service.listForApp('a', { limit: 500 } as any);
+    expect(qb.take).toHaveBeenLastCalledWith(100);
+
+    await service.listForApp('a', { page: 3, limit: 10 } as any);
+    expect(qb.take).toHaveBeenLastCalledWith(10);
+    expect(qb.skip).toHaveBeenLastCalledWith(20);
+  });
+
+  it('applies each filter as a parameterized clause', async () => {
+    await service.listForApp('a', {
+      direction: 'outbound', status: 'pending', chain: 'tron',
+      asset: 'trx', externalUserId: 'user-9', reference: 'r-1', txid: 'dead',
+    } as any);
+
+    const { andWheres } = qb.calls;
+    expect(andWheres).toContainEqual(
+      { expr: 't.direction = :direction', params: { direction: 'outbound' } });
+    expect(andWheres).toContainEqual(
+      { expr: 't.status = :status', params: { status: 'pending' } });
+    // chain/asset normalize to canonical codes before binding
+    expect(andWheres).toContainEqual(
+      { expr: 't.chain = :chain', params: { chain: 'TRON' } });
+    expect(andWheres).toContainEqual(
+      { expr: 't.asset = :asset', params: { asset: 'TRX' } });
+    expect(andWheres).toContainEqual(
+      { expr: 'w.externalUserId = :externalUserId', params: { externalUserId: 'user-9' } });
+    expect(andWheres).toContainEqual(
+      { expr: 't.reference = :reference', params: { reference: 'r-1' } });
+    expect(andWheres).toContainEqual(
+      { expr: 't.txid = :txid', params: { txid: 'dead' } });
+  });
+
+  it('rejects unknown assets and chains with 400s', async () => {
+    await expect(
+      service.listForApp('a', { asset: 'NOTACOIN' } as any),
+    ).rejects.toThrow(/Unsupported asset/);
+    await expect(
+      service.listForApp('a', { chain: 'NOTACHAIN' } as any),
+    ).rejects.toThrow(/Unsupported chain/);
+  });
+
+  it('strips raw and the wallet join, flattening externalUserId', async () => {
+    const res = await service.listForApp('a', {} as any);
+    expect(res).toEqual({ data: [expect.any(Object)], total: 1, page: 1, limit: 20 });
+    const item = res.data[0];
+    expect(item.externalUserId).toBe('user-1');
+    expect(item).not.toHaveProperty('raw');
+    expect(item).not.toHaveProperty('wallet');
+    expect(item.txid).toBe('abc123');
+  });
+
+  it('returns a valid empty page', async () => {
+    qb.getManyAndCount.mockResolvedValue([[], 0]);
+    const res = await service.listForApp('a', { page: 9 } as any);
+    expect(res).toEqual({ data: [], total: 0, page: 9, limit: 20 });
+  });
+});

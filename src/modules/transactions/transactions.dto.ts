@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { Type } from 'class-transformer';
 
 /**
  * Strict positive-decimal amount. IsNumberString allows '-5', '+5', '.5' —
@@ -42,6 +43,64 @@ export class SendTransactionDto {
   @MaxLength(128)
   @IsOptional()
   reference?: string;
+}
+
+const TX_DIRECTIONS = ['inbound', 'outbound'] as const;
+const TX_STATUSES = [
+  'pending', 'confirmed', 'failed', 'reorged', 'requires_approval', 'rejected',
+] as const;
+
+/** Query filters for GET /transactions — the app-wide, tenant-scoped feed. */
+export class ListTransactionsDto {
+  @ApiPropertyOptional({ default: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  page?: number;
+
+  @ApiPropertyOptional({ default: 20, maximum: 100 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  limit?: number;
+
+  @ApiPropertyOptional({ enum: TX_DIRECTIONS })
+  @IsIn([...TX_DIRECTIONS])
+  @IsOptional()
+  direction?: 'inbound' | 'outbound';
+
+  @ApiPropertyOptional({ enum: TX_STATUSES })
+  @IsIn([...TX_STATUSES])
+  @IsOptional()
+  status?: string;
+
+  @ApiPropertyOptional({ description: 'Chain code, e.g. TRON, ETH — native + its tokens' })
+  @IsString()
+  @IsOptional()
+  chain?: string;
+
+  @ApiPropertyOptional({ description: 'Exact asset code, e.g. USDT_TRON' })
+  @IsString()
+  @IsOptional()
+  asset?: string;
+
+  @ApiPropertyOptional({ description: 'Your user ID — narrows to one wallet' })
+  @IsString()
+  @IsOptional()
+  externalUserId?: string;
+
+  @ApiPropertyOptional({ description: 'Your send/lookup reference' })
+  @IsString()
+  @IsOptional()
+  reference?: string;
+
+  @ApiPropertyOptional({ description: 'On-chain transaction hash' })
+  @IsString()
+  @IsOptional()
+  txid?: string;
 }
 
 export class EstimateFeeQueryDto {

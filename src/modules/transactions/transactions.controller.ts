@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
-import { EstimateFeeQueryDto, SendTransactionDto } from './transactions.dto';
+import { EstimateFeeQueryDto, ListTransactionsDto, SendTransactionDto } from './transactions.dto';
 import { RequireScope } from '../../common/api-key.guard';
 
 @ApiTags('withdrawals')
@@ -29,6 +29,19 @@ export class WithdrawalsController {
 @Controller('api/v1')
 export class TransactionsController {
   constructor(private readonly txs: TransactionsService) {}
+
+  @RequireScope('wallet')
+  @Get('transactions')
+  @ApiOperation({
+    summary:
+      'List your app\'s transactions — deposits and withdrawals across ' +
+      'all your users, newest first. Paginated (page/limit≤100); filter ' +
+      'by direction, status, chain, asset, externalUserId, reference, ' +
+      'txid. Internal consolidation (sweeps) never appears here.',
+  })
+  list(@Query() q: ListTransactionsDto, @Req() req: any) {
+    return this.txs.listForApp(req.appId, q);
+  }
 
   @RequireScope('wallet')
   @Get('transactions/:id')
