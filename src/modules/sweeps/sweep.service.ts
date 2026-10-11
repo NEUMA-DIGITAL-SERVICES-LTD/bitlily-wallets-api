@@ -57,7 +57,7 @@ export class SweepService {
   async sweepAddress(
     depositAddressId: string,
     opts?: { maxAmount?: string },
-  ): Promise<{ txids: string[]; pendingKms?: string[] }> {
+  ): Promise<{ txids: string[]; pendingKms?: string[]; amount?: string }> {
     if (this.config.get('tatum.useKms') !== true) {
       throw new BadRequestException(
         'Sweeps require KMS signing — deposit addresses have no local keys. ' +
@@ -150,7 +150,7 @@ export class SweepService {
     record(r);
     await this.recordOutbound(dep, asset, amount, treasury, `sweep:${dep.id}`, r);
     this.logger.log(`Sweep ${dep.address} → ${treasury}: ${amount} ${asset.code}`);
-    return { txids, pendingKms };
+    return { txids, pendingKms, amount };
   }
 
   /**

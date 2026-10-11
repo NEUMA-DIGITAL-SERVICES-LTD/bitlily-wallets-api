@@ -721,7 +721,15 @@ export class TatumProvider implements BlockchainProvider {
       });
       const wei = String(data?.gasPrice ?? '0');
       if (wei === '0') throw new Error('zero gasPrice');
-      return { gasLimit: String(data.gasLimit ?? defaultLimit), gasPrice: toGwei(wei) };
+      // Floor the returned limit at the type default — Tatum's estimate can
+      // come back under the 21000 protocol minimum, and a tx built below it
+      // is unbroadcastable: the KMS signer rejects it forever, stalling the
+      // queue (seen live: gasLimit 15000 stuck >10h).
+      const limit = Math.max(
+        Number(data.gasLimit ?? defaultLimit),
+        Number(defaultLimit),
+      );
+      return { gasLimit: String(limit), gasPrice: toGwei(wei) };
     } catch (e) {
       try {
         const feeChain = TATUM_CHAIN_CODE[params.asset.chain] ?? params.asset.chain;

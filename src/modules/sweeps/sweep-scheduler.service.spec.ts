@@ -22,6 +22,7 @@ describe('SweepSchedulerService', () => {
   let service: SweepSchedulerService;
   let addresses: any;
   let custody: any;
+  let txs: any;
   let sweeps: any;
   let notifier: any;
   let config: any;
@@ -34,14 +35,18 @@ describe('SweepSchedulerService', () => {
   };
 
   beforeEach(() => {
-    addresses = { find: jest.fn().mockResolvedValue([]) };
+    addresses = { find: jest.fn().mockResolvedValue([]), update: jest.fn() };
     custody = { find: jest.fn().mockResolvedValue([]) };
-    sweeps = { sweepAddress: jest.fn().mockResolvedValue({ txids: ['t1'] }) };
+    txs = { find: jest.fn().mockResolvedValue([]) };
+    sweeps = {
+      sweepAddress: jest.fn().mockResolvedValue({ txids: ['t1'], amount: '95' }),
+    };
     notifier = { notifyEvent: jest.fn() };
     config = { get: jest.fn((k: string) => (configOn as any)[k]) };
     service = new SweepSchedulerService(
       addresses,
       custody,
+      txs,
       sweeps,
       config,
       notifier,
@@ -66,6 +71,35 @@ describe('SweepSchedulerService', () => {
     addresses.find.mockResolvedValue([dep()]);
     await service.run();
     expect(sweeps.sweepAddress).toHaveBeenCalledWith('dep-1', { maxAmount: '100' });
+  });
+
+  it('optimistically decrements creditedAmount by the sent amount', async () => {
+    const d = dep({ creditedAmount: '100' });
+    addresses.find.mockResolvedValue([d]);
+    await service.run();
+    expect(addresses.update).toHaveBeenCalledWith('dep-1', { creditedAmount: '5.000000' });
+  });
+
+  it('leaves the watermark alone when only a gas pump went out', async () => {
+    sweeps.sweepAddress.mockResolvedValue({ txids: [], pendingKms: ['k1'] });
+    addresses.find.mockResolvedValue([dep()]);
+    await service.run();
+    expect(addresses.update).not.toHaveBeenCalled();
+  });
+
+  it('skips rows whose sweep or gas-pump is already in flight', async () => {
+    txs.find.mockResolvedValue([
+      { reference: 'sweep:dep-1' },
+      { reference: 'gas-pump:dep-3' },
+    ]);
+    addresses.find.mockResolvedValue([
+      dep({ id: 'dep-1' }),
+      dep({ id: 'dep-2', address: 'T-2' }),
+      dep({ id: 'dep-3', address: 'T-3' }),
+    ]);
+    await service.run();
+    expect(sweeps.sweepAddress).toHaveBeenCalledTimes(1);
+    expect(sweeps.sweepAddress).toHaveBeenCalledWith('dep-2', { maxAmount: '100' });
   });
 
   it('never sweeps a custody treasury/base address into itself', async () => {

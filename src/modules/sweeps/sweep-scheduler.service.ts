@@ -2,9 +2,11 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
-import { MoreThan, Repository } from 'typeorm';
+import { Like, MoreThan, Repository } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
+import { Transaction } from '../../database/entities/transaction.entity';
+import { getAsset } from '../../config/assets';
 import { SweepService } from './sweep.service';
 import { NotifierService } from '../notifications/notifier.service';
 import { errMsg } from '../../common/errors';
@@ -46,6 +48,8 @@ export class SweepSchedulerService {
     private readonly addresses: Repository<DepositAddress>,
     @InjectRepository(CustodyAccount)
     private readonly custody: Repository<CustodyAccount>,
+    @InjectRepository(Transaction)
+    private readonly txs: Repository<Transaction>,
     private readonly sweeps: SweepService,
     private readonly config: ConfigService,
     private readonly notifier: NotifierService,
@@ -85,16 +89,46 @@ export class SweepSchedulerService {
       take: cap * 4,
     });
 
+    // In-flight exclusion: rows with a pending sweep/gas-pump send are mid-
+    // flight — re-checking them costs a chain read for nothing, and the
+    // watermark below isn't rebaselined until the send confirms.
+    const pending = new Set(
+      (
+        await this.txs.find({
+          where: [
+            { status: 'pending', reference: Like('sweep:%') },
+            { status: 'pending', reference: Like('gas-pump:%') },
+          ],
+          select: ['reference'],
+        })
+      ).map((t) => t.reference.split(':')[1]),
+    );
+
     let swept = 0;
     for (const dep of candidates) {
       if (swept >= cap) break;
       if (selfSweep.has(dep.address)) continue;
+      if (pending.has(dep.id)) continue;
       const floor = parseFloat(min[dep.asset] ?? '0');
       if (parseFloat(dep.creditedAmount) < floor) continue;
 
       try {
-        await this.sweeps.sweepAddress(dep.id, { maxAmount: dep.creditedAmount });
+        const r = await this.sweeps.sweepAddress(dep.id, { maxAmount: dep.creditedAmount });
         this.failures.delete(dep.id);
+        // Optimistic watermark: move creditedAmount down by what was sent so
+        // the row leaves the candidate set immediately instead of waiting a
+        // poller cycle for the rebaseline. Safe direction — OVER-counting is
+        // corrected by the poller's rebaseline; under-counting could
+        // phantom-credit. Change outputs may leave a residue the poller
+        // reconciles to truth.
+        if (r.amount) {
+          const decimals = getAsset(dep.asset)?.decimals ?? 8;
+          const next = Math.max(
+            0,
+            parseFloat(dep.creditedAmount) - parseFloat(r.amount),
+          ).toFixed(decimals);
+          await this.addresses.update(dep.id, { creditedAmount: next });
+        }
         swept++;
       } catch (e) {
         if (e instanceof BadRequestException) continue; // expected skip

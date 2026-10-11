@@ -38,8 +38,16 @@ describe('OutboundStatusService', () => {
       getLatestBlock: jest.fn().mockResolvedValue(1000),
     };
     ledger = { postEntry: jest.fn() };
-    notifier = { notify: jest.fn() };
-    m = { update: jest.fn() };
+    notifier = { notify: jest.fn(), notifyEvent: jest.fn() };
+    m = {
+      update: jest.fn(),
+      // Used by internal-inflow accounting: locked re-read of the tx row
+      // (claim flag), then the watched DepositAddress rows to watermark.
+      findOne: jest.fn(async (_e: any, q: any) =>
+        q?.lock ? { id: 'tx-1', raw: {} } : { raw: {} }),
+      find: jest.fn().mockResolvedValue([]),
+      save: jest.fn(async (e: any) => e),
+    };
     const em = { transaction: jest.fn(async (cb: any) => cb(m)) };
     service = new OutboundStatusService(
       txs, em as any, provider, ledger, notifier,
@@ -154,6 +162,160 @@ describe('OutboundStatusService', () => {
     txs.save.mockClear();
     await service.sweep();
     expect(notifier.notify).not.toHaveBeenCalled(); // deduped
+  });
+
+  it('never reverses a debit on an internal send — sweeps have no debit', async () => {
+    queue({
+      ...baseTx,
+      txid: 'pending:abc',
+      raw: { kmsRequestId: 'kms-1', internal: 'sweep' },
+    });
+    provider.getPendingSignature.mockResolvedValue({ status: 'failed' });
+
+    await service.sweep();
+
+    expect(m.update).toHaveBeenCalledWith(
+      Transaction, 'tx-1', { status: 'failed' },
+    );
+    expect(ledger.postEntry).not.toHaveBeenCalled(); // would mint free balance
+    expect(notifier.notify).not.toHaveBeenCalled(); // tenant never hears plumbing
+    expect(notifier.notifyEvent).toHaveBeenCalledWith(
+      'sweep.failed',
+      expect.objectContaining({ transactionId: 'tx-1' }),
+    );
+  });
+
+  it('suppresses withdrawal notifications for confirmed internal sends', async () => {
+    queue({
+      ...baseTx,
+      txid: '0xsweep',
+      raw: { internal: 'sweep' },
+    });
+    provider.getTransaction.mockResolvedValue({
+      txid: '0xsweep', blockNumber: 995, confirmations: 20, status: 'confirmed',
+    });
+    provider.getLatestBlock.mockResolvedValue(1000);
+
+    await service.sweep();
+
+    expect(txs.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'confirmed' }),
+    );
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('bumps the watch-row watermark when our send lands on it', async () => {
+    const dep = { id: 'dep-1', creditedAmount: '0.00010000' };
+    m.find.mockResolvedValue([dep]);
+    queue({
+      ...baseTx,
+      txid: '0xpump',
+      amount: '0.005',
+      address: 'watched-addr',
+      raw: { internal: 'sweep' },
+    });
+    provider.getTransaction.mockResolvedValue({
+      txid: '0xpump', blockNumber: 995, confirmations: 1, status: 'confirmed',
+    });
+    provider.getLatestBlock.mockResolvedValue(1010);
+
+    await service.sweep();
+
+    expect(m.save).toHaveBeenCalledWith(
+      expect.objectContaining({ creditedAmount: '0.005100000000000000' }),
+    );
+    // Flag claimed once — a second cycle must not double-bump.
+    m.save.mockClear();
+    await service.sweep();
+    const depSaves = m.save.mock.calls.filter(
+      (c: any[]) => c[0]?.creditedAmount !== undefined,
+    );
+    expect(depSaves.length).toBe(0);
+  });
+
+  it('un-bumps the watermark when the broadcast never lands', async () => {
+    const dep = { id: 'dep-1', creditedAmount: '0.005100000000000000' };
+    m.find.mockResolvedValue([dep]);
+    m.findOne.mockResolvedValue({ raw: { internal: 'sweep', inflowAccounted: true } });
+    queue({
+      ...baseTx,
+      txid: '0xlost',
+      amount: '0.005',
+      address: 'watched-addr',
+      raw: { internal: 'sweep', inflowAccounted: true },
+      createdAt: new Date(Date.now() - 61 * 60 * 1000),
+    });
+    provider.getTransaction.mockResolvedValue(null);
+
+    await service.sweep();
+
+    expect(m.save).toHaveBeenCalledWith(
+      expect.objectContaining({ creditedAmount: '0.000100000000000000' }),
+    );
+    expect(m.update).toHaveBeenCalledWith(
+      Transaction, 'tx-1',
+      expect.objectContaining({ raw: { internal: 'sweep' } }),
+    );
+  });
+
+  it('stalled internal sends alert via ops event, not the tenant webhook', async () => {
+    queue({
+      ...baseTx,
+      txid: 'pending:abc',
+      raw: { kmsRequestId: 'kms-1', internal: 'sweep' },
+      createdAt: new Date(Date.now() - 11 * 60 * 1000),
+    });
+    provider.getPendingSignature.mockResolvedValue({ status: 'pending' });
+
+    await service.sweep();
+
+    expect(notifier.notify).not.toHaveBeenCalled();
+    expect(notifier.notifyEvent).toHaveBeenCalledWith(
+      'sweep.stalled',
+      expect.objectContaining({ transactionId: 'tx-1' }),
+    );
+    expect(txs.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'pending' }),
+    );
+  });
+
+  it('auto-fails internal sends unsigned past the zombie window', async () => {
+    queue({
+      ...baseTx,
+      txid: 'pending:abc',
+      raw: { kmsRequestId: 'kms-1', internal: 'sweep' },
+      createdAt: new Date(Date.now() - 61 * 60 * 1000),
+    });
+    provider.getPendingSignature.mockResolvedValue({ status: 'pending' });
+
+    await service.sweep();
+
+    expect(txs.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' }),
+    );
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+    expect(notifier.notifyEvent).toHaveBeenCalledWith(
+      'sweep.failed',
+      expect.objectContaining({ transactionId: 'tx-1' }),
+    );
+  });
+
+  it('never auto-fails a user withdrawal — double-send risk is real there', async () => {
+    queue({
+      ...baseTx,
+      txid: 'pending:abc',
+      raw: { kmsRequestId: 'kms-1' },
+      createdAt: new Date(Date.now() - 61 * 60 * 1000),
+    });
+    provider.getPendingSignature.mockResolvedValue({ status: 'pending' });
+
+    await service.sweep();
+
+    expect(txs.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'pending' }),
+    );
+    expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 
   it('does not flag a fresh KMS request as stalled', async () => {

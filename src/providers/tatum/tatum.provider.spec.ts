@@ -222,6 +222,20 @@ describe('TatumProvider', () => {
       expect(body.digits).toBe(6);
     });
 
+    it('floors a sub-protocol gasLimit — a 15000 estimate can never sign', async () => {
+      const post = jest
+        .fn()
+        .mockResolvedValueOnce({ data: { gasPrice: '1000000000', gasLimit: '15000' } })
+        .mockResolvedValueOnce({ data: { id: 'req-1' } });
+      const p = makeProvider({ post });
+      const ETH_ASSET: AssetDef = {
+        code: 'ETH', chain: 'ETH', type: 'native', decimals: 18,
+      } as AssetDef;
+      await p.sendTransaction(sendParams(ETH_ASSET));
+      const body = post.mock.calls[1][1];
+      expect(body.fee.gasLimit).toBe('21000');
+    });
+
     it('SPL send uses the unified token endpoint with a SOL body', async () => {
       const post = jest.fn().mockResolvedValue({ data: { id: 'req-1' } });
       const p = makeProvider({ post });
