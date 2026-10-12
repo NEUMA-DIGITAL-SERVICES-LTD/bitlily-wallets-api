@@ -16,5 +16,6 @@
     "strictNullChecks": false,
     "noImplicitAny": false,
     "forceConsistentCasingInFileNames": true
-  }
+  },
+  "include": ["src/**/*"]
 }
