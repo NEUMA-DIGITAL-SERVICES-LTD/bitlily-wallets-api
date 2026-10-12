@@ -40,6 +40,17 @@ export const tatumConfig = registerAs('tatum', () => ({
   useKms: process.env.TATUM_USE_KMS === 'true',
   kmsUrl: process.env.KMS_URL ?? '',
   kmsApiKey: process.env.KMS_API_KEY ?? '',
+  /**
+   * Solana JSON-RPC used for per-address signature history — Tatum has NO
+   * SOL address-history endpoint (v4 unified history is EVM-only; verified
+   * live). Point at a dedicated RPC (Helius/QuickNode/self-hosted) in
+   * production; the public cluster endpoints are devnet-grade rate limits.
+   */
+  solanaRpcUrl:
+    process.env.SOLANA_RPC_URL ??
+    ((process.env.TATUM_NETWORK ?? 'testnet') === 'mainnet'
+      ? 'https://api.mainnet-beta.solana.com'
+      : 'https://api.devnet.solana.com'),
   // When set, /api/v1/webhooks/tatum REQUIRES a valid x-payload-hash
   // (HMAC-SHA512, Base64). Tatum only sends it after the API key is
   // enrolled via PUT /v3/subscription/enableWebHookHmac — the service

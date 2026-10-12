@@ -42,7 +42,9 @@ Expected: `201` → wallet + one permanent address **per HD chain**:
     { "address": "tb1...",  "chain": "BTC",     "assets": ["BTC"],                   "expiresAt": null },
     { "address": "0x...",   "chain": "ETH",     "assets": ["ETH","USDT_ETH","USDC_ETH"], "expiresAt": null },
     { "address": "0x...",   "chain": "POLYGON", "assets": ["POL","USDT_MATIC","USDC_MATIC"], "expiresAt": null },
-    { "address": "msS...",  "chain": "LTC",     "assets": ["LTC"],                   "expiresAt": null }
+    { "address": "msS...",  "chain": "LTC",     "assets": ["LTC"],                   "expiresAt": null },
+    { "address": "SoL1...", "chain": "SOL",     "assets": ["SOL","USDC_SOL"],
+      "expiresAt": null, "memo": "bl-x7k9m2pq", "memoRequired": true }
   ]
 }
 ```
@@ -50,10 +52,10 @@ Expected: `201` → wallet + one permanent address **per HD chain**:
 - Every address is **permanent** — `expiresAt: null`, reusable forever.
 - One entry per *address*, not per asset — `assets` lists everything the
   address accepts (TRON covers TRX + USDT_TRON, ETH covers ETH + tokens).
-- **SOL is deliberately not auto-provisioned**: it shares one custody
-  address across wallets with no per-user attribution (see §Known
-  boundary). Add it explicitly only if you handle its ops flow:
-  `{"externalUserId":"…","ensure":["SOL"]}`.
+- **SOL carries a deposit `memo` + `memoRequired: true`** — the shared
+  custody address is the same for every user; the memo is what attributes
+  the deposit to this wallet. Render it prominently wherever the address
+  is shown (see *SOL deposits — the memo model* below).
 
 ## 2. Idempotency + selective provisioning + GET lookup
 
@@ -62,7 +64,7 @@ Expected: `201` → wallet + one permanent address **per HD chain**:
 curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"externalUserId":"verify-user-1"}'
 
-# Provision just one chain (e.g. SOL opted-in later):
+# Provision a subset only (skips the other chains):
 curl -X POST $BASE/wallets -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
   -d '{"externalUserId":"verify-user-1","ensure":["SOL"]}'
 
@@ -272,6 +274,13 @@ wrong asset to a watched address, ops re-arms polling via
 `POST /admin/wallets/<walletId>/watch` (admin-gated). This is operator
 tooling — your app never calls it; raise it with ops when it happens.
 
+**Unattributed SOL deposits:** `GET /admin/deposits/unattributed` lists
+verified on-chain deposits whose memo resolved no wallet (missing, typo'd,
+or foreign memos — txid, amount, memo shown). Ops credits one explicitly
+via `POST /admin/deposits/<id>/credit` `{"appId","externalUserId"}` —
+idempotent (a second credit 409s), ledger-audited, and the user receives
+the normal `deposit.confirmed` webhook.
+
 **Disaster-recovery note (ops):** deposit addresses derive from a
 monotonic per-chain index — the same wallet recreated in the same order
 gets the same addresses, and the poller re-credits real on-chain
@@ -279,10 +288,34 @@ balances it finds there (that IS the recovery mechanism). On a rebuild,
 recreate wallets in **original creation order** or users inherit each
 other's addresses and balances.
 
-## Known boundary — SOL deposits
+## SOL deposits — the memo model
 
-SOL shares one custody base address across wallets, so per-user SOL
-deposits **are not auto-credited** (deliberate — balance deltas can't be
-attributed safely). Detected SOL inflows surface for manual/memo-based
-crediting instead of guessing the owner. Use TRX/BTC/ETH/LTC/POLYGON or
-EVM/TRON tokens for deposit verification.
+Solana can't derive per-user addresses (no xpub), so **all users share one
+SOL deposit address** — attribution comes from a memo, the same way
+Binance/Kraken/Bybit handle Solana and XLM/XRP handle destination tags:
+
+- The wallet's `addresses` entry for SOL carries `memo` (e.g.
+  `bl-x7k9m2pq`) and `memoRequired: true`. **The memo is per wallet —
+  show it with the address.**
+- The sender writes the memo into the transaction's Solana **Memo program
+  instruction** — every wallet and exchange supports it ("add memo/tag/
+  note" field on the send form; Phantom, Solflare, Binance withdrawals…).
+- The deposit scanner reads inbound transactions to the shared address,
+  exact-matches the memo to a wallet, and credits it — same
+  `deposit.pending`/`deposit.confirmed` webhooks as every other chain.
+- **A deposit with a missing, wrong, or foreign memo is NOT lost** — it
+  is recorded on-chain, flagged `unattributed`, and lands in the ops
+  review queue for manual crediting (worst case: slower, not gone).
+  It simply never *auto*-credits — we never guess ownership from
+  amounts or timing.
+- The memo works for `USDC_SOL` too — one code covers every asset on the
+  chain.
+
+Client UX obligation: treat `memoRequired: true` like a checkout field —
+if your UI lets a user copy the SOL address without the memo, some
+deposits WILL arrive unattributed and queue for manual review.
+
+**Withdrawal caveat:** sending TO an exchange address that requires *its*
+memo is not yet supported — the send API has no memo field today. If your
+users withdraw to exchanges, tell them to pick a wallet address that
+doesn't require one until that lands.

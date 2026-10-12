@@ -6,7 +6,7 @@ import { EntityManager, Repository, IsNull, MoreThan, Or } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
-import { AssetDef, getAsset } from '../../config/assets';
+import { AssetDef, enabledAssets, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
@@ -74,9 +74,192 @@ export class DepositPollerService {
         ),
       );
       for (const dep of active) await this.checkAddress(dep, custodyAddrs);
+      await this.scanSharedDeposits(custodyRows);
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * Shared-custody scan (SOL): the enrolled baseAddress serves EVERY wallet,
+   * so balance deltas can't attribute deposits — inbound txs are enumerated
+   * and the sender's Memo program instruction resolves the wallet (the
+   * exchange destination-tag model). Deposits with a missing/unknown memo
+   * are recorded unattributed (wallet: NULL) for the ops credit queue —
+   * funds are never guessed and never silently dropped.
+   *
+   * Dedupe is (txid, address, asset, direction) — the same signature is
+   * processed once even across poll cycles or a webhook/poller overlap.
+   */
+  private async scanSharedDeposits(custodyRows: CustodyAccount[]): Promise<void> {
+    for (const c of custodyRows) {
+      if (!c.baseAddress) continue;
+      for (const a of enabledAssets().filter((a) => a.chain === c.chain)) {
+        // getAsset() — not the raw registry entry — applies the testnet
+        // contract swap. Without it the SPL mint filter matched the
+        // MAINNET mint on a testnet deploy and silently found nothing.
+        const asset = getAsset(a.code);
+        if (!asset) continue;
+        try {
+          await this.scanSharedForAsset(c.baseAddress, c.chain, asset);
+        } catch (e) {
+          this.logger.error(
+            `Shared-address scan failed for ${c.chain}/${asset.code}: ${errMsg(e)}`,
+          );
+        }
+      }
+    }
+  }
+
+  private async scanSharedForAsset(
+    base: string,
+    chain: string,
+    asset: AssetDef,
+  ): Promise<void> {
+    const recent =
+      (await this.provider.getAddressTransactions?.(base, asset, 25)) ?? [];
+    if (!recent.length) return;
+    const req = this.requiredConfirmations(chain);
+
+    for (const cand of recent) {
+      if (!cand.txid) continue;
+      const seen = await this.txs.findOne({
+        where: { txid: cand.txid, address: base, asset: asset.code, direction: 'inbound' },
+        relations: ['wallet'],
+      });
+      if (seen) {
+        // Advance an attributed row that was recorded below the
+        // confirmation threshold — SOL reports finalized (32) on success
+        // so this is rare, but the advance keeps semantics uniform.
+        if (seen.status === 'pending' && seen.wallet) {
+          await this.advanceShared(seen, asset, req);
+        }
+        continue;
+      }
+
+      const full = await this.provider.getTransaction(
+        cand.txid, chain as any, asset,
+      );
+      if (!full || full.status === 'failed') continue;
+      const inbound = full.outputs
+        .filter((o) => o.address === base)
+        .reduce((s, o) => s + parseFloat(o.amount), 0);
+      if (inbound <= 0) continue;
+      const confirmed = (full.confirmations ?? 0) >= req;
+      const memo = full.memo?.trim() || null;
+
+      // Exact-match only — never infer ownership from amount, timing, or
+      // polling order. A memo that matches no active account (typo'd,
+      // foreign system) takes the unattributed path like a missing one.
+      const dep = memo
+        ? await this.addresses.findOne({
+            where: {
+              address: base,
+              asset: asset.code,
+              status: 'active',
+              account: { memo },
+            },
+            relations: ['account', 'account.wallet'],
+          })
+        : null;
+
+      const tx = await this.em.transaction(async (m) => {
+        const dup = await m.findOne(Transaction, {
+          where: { txid: cand.txid, address: base, asset: asset.code, direction: 'inbound' },
+        });
+        if (dup) return null;
+        const t = await m.save(
+          m.create(Transaction, {
+            wallet: dep?.account.wallet ?? null,
+            direction: 'inbound',
+            chain,
+            asset: asset.code,
+            txid: cand.txid,
+            address: base,
+            amount: inbound.toFixed(asset.decimals),
+            status: !dep || confirmed ? 'confirmed' : 'pending',
+            confirmations: full.confirmations ?? 0,
+            requiredConfirmations: req,
+            blockNumber: full.blockNumber ?? cand.blockNumber ?? null,
+            raw: {
+              detectedVia: 'memo-polling',
+              memo,
+              unattributed: !dep,
+            },
+          }),
+        );
+        if (dep && confirmed) {
+          await this.ledger.postEntry(
+            m, dep.account.wallet, t, 'deposit_confirmed', t.amount, 'credit',
+          );
+          // Keep the row's credited marker truthful — shared rows never
+          // run delta detection, but the number should still mean
+          // "how much this watch row has credited" wherever it is read.
+          const fresh = await m.findOne(DepositAddress, {
+            where: { id: dep.id },
+            lock: { mode: 'pessimistic_write' },
+          });
+          fresh.creditedAmount =
+            (parseFloat(fresh.creditedAmount) + inbound).toFixed(asset.decimals);
+          await m.save(fresh);
+        }
+        return t;
+      });
+      if (!tx) continue; // webhook path or a racing poll recorded it first
+
+      if (dep) {
+        await this.notifier.notify(
+          confirmed ? 'deposit.confirmed' : 'deposit.pending', tx,
+        );
+      } else {
+        await this.notifier.notifyEvent('deposit.unattributed', {
+          transactionId: tx.id,
+          txid: tx.txid,
+          address: base,
+          chain,
+          asset: asset.code,
+          amount: tx.amount,
+          memo,
+        });
+      }
+    }
+  }
+
+  /** Confirmation-threshold advance for attributed shared-address rows —
+   * same semantics as checkAddress's existing-row branch, minus the delta
+   * machinery (shared rows have no per-wallet balance delta to compare). */
+  private async advanceShared(
+    seen: Transaction,
+    asset: AssetDef,
+    req: number,
+  ): Promise<void> {
+    const full = await this.provider.getTransaction(
+      seen.txid, seen.chain as any, asset,
+    );
+    if (!full || full.status === 'failed') return;
+    if ((full.confirmations ?? 0) < req) {
+      await this.txs.update(seen.id, { confirmations: full.confirmations ?? 0 });
+      return;
+    }
+    const credited = await this.em.transaction(async (m) => {
+      // No join under FOR UPDATE (Postgres rejects locking nullable outer
+      // sides) — loadRelationIds exposes the raw wallet_id instead.
+      const fresh = await m.findOne(Transaction, {
+        where: { id: seen.id },
+        loadRelationIds: true,
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!fresh || fresh.status !== 'pending' || !fresh.wallet) return null;
+      fresh.status = 'confirmed';
+      fresh.confirmations = full.confirmations!;
+      fresh.blockNumber = full.blockNumber ?? fresh.blockNumber;
+      await m.save(fresh);
+      await this.ledger.postEntry(
+        m, seen.wallet, fresh, 'deposit_confirmed', fresh.amount, 'credit',
+      );
+      return fresh;
+    });
+    if (credited) await this.notifier.notify('deposit.confirmed', credited);
   }
 
   private async checkAddress(

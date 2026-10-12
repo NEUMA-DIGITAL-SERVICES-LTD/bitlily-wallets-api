@@ -13,7 +13,7 @@ import {
 } from '../../providers/provider.interface';
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
-import { errMsg } from '../../common/errors';
+import { errCode, errMsg } from '../../common/errors';
 import { getAsset } from '../../config/assets';
 
 interface TatumAddressEvent {
@@ -126,12 +126,90 @@ export class WebhooksService implements OnApplicationBootstrap {
       const result = await this.processForAsset(dep, payload);
       if (result !== 'skip') return { status: result };
     }
+    // Shared-custody rows (SOL) skip on memo mismatch — a tx that DOES pay
+    // the address but carried no usable memo is a real deposit; record it
+    // unattributed for ops review rather than calling it spoofed.
+    if (deps.some((d) => d.account?.memo)) {
+      const status = await this.recordUnattributed(deps, payload);
+      if (status) return { status };
+    }
     // Every watched asset failed output verification — not one of ours
     // (or token normalization can't see it). Log loudly; don't credit.
     this.logger.error(
       `tx ${payload.txId} does not pay ${payload.address} — possible spoofed webhook`,
     );
     return { status: 'rejected' };
+  }
+
+  /**
+   * A verified inbound tx to a shared-custody address whose memo matched
+   * no watched wallet. Recorded with wallet:NULL for the ops credit queue
+   * — funds are never guessed, never silently dropped. Returns a status
+   * string when it recorded (or deduped) the deposit, null when the tx
+   * doesn't actually pay the address under any watched asset's lens.
+   */
+  private async recordUnattributed(
+    deps: DepositAddress[],
+    payload: TatumAddressEvent,
+  ): Promise<string | null> {
+    for (const dep of deps) {
+      const asset = getAsset(dep.asset);
+      if (!asset) continue;
+      const chainTx = await this.provider.getTransaction(
+        payload.txId, dep.chain as any, asset,
+      );
+      if (!chainTx || chainTx.status === 'failed') continue;
+      const inbound = chainTx.outputs
+        .filter((o) => o.address === payload.address)
+        .reduce((s, o) => s + parseFloat(o.amount), 0);
+      if (inbound <= 0) continue;
+      try {
+        const tx = await this.em.transaction(async (m) => {
+          const dup = await m.findOne(Transaction, {
+            where: {
+              txid: payload.txId, address: payload.address,
+              asset: asset.code, direction: 'inbound',
+            },
+          });
+          if (dup) return null;
+          return m.save(
+            m.create(Transaction, {
+              wallet: null,
+              direction: 'inbound',
+              chain: dep.chain,
+              asset: asset.code,
+              txid: payload.txId,
+              address: payload.address,
+              amount: inbound.toFixed(asset.decimals),
+              status: 'confirmed',
+              confirmations: chainTx.confirmations ?? 0,
+              requiredConfirmations: this.requiredConfirmations(dep.chain),
+              blockNumber: chainTx.blockNumber ?? null,
+              raw: {
+                detectedVia: 'webhook',
+                memo: chainTx.memo ?? null,
+                unattributed: true,
+              },
+            }),
+          );
+        });
+        if (!tx) return 'duplicate';
+        await this.notifier.notifyEvent('deposit.unattributed', {
+          transactionId: tx.id,
+          txid: tx.txid,
+          address: tx.address,
+          chain: tx.chain,
+          asset: tx.asset,
+          amount: tx.amount,
+          memo: chainTx.memo ?? null,
+        });
+        return 'unattributed';
+      } catch (e) {
+        if (errCode(e) === '23505') return 'duplicate';
+        throw e;
+      }
+    }
+    return null;
   }
 
   private async processForAsset(
@@ -155,6 +233,11 @@ export class WebhooksService implements OnApplicationBootstrap {
         }
       } catch { /* keep provider-reported count */ }
     }
+    // Shared-custody attribution (SOL): this row's account memo must match
+    // the tx's Memo instruction — the shared address alone proves nothing.
+    // A mismatch isn't rejection, just "not this wallet": the row whose
+    // memo matches still gets its turn; none matching → unattributed path.
+    if (dep.account?.memo && chainTx.memo !== dep.account.memo) return 'skip';
     const output = chainTx.outputs.find(
       (o) => o.address.toLowerCase() === payload.address.toLowerCase(),
     );

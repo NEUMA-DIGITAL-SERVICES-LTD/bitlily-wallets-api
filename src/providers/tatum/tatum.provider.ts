@@ -63,6 +63,62 @@ function fromRaw(raw: string, decimals: number): string {
 const BASE58_ALPHABET =
   '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
+/** Solana Memo program ids — v1 (legacy) and v2 (current). Only
+ * instructions invoking one of these carry a deposit memo; text anywhere
+ * else in the transaction proves nothing. */
+/** SPL Token program — the `programId` filter used for ATA discovery. */
+const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+
+const SOL_MEMO_PROGRAMS = new Set([
+  'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo',
+  'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+]);
+
+/** base58 string → bytes (memo instruction data arrives base58-encoded). */
+function b58decode(s: string): Buffer | null {
+  const n = s.split('').reduce((acc, ch) => {
+    const i = BASE58_ALPHABET.indexOf(ch);
+    return i < 0 ? null : acc === null ? null : acc * 58n + BigInt(i);
+  }, 0n as bigint | null);
+  if (n === null) return null;
+  let hex = n.toString(16);
+  if (hex.length % 2) hex = `0${hex}`;
+  const bytes = Buffer.from(hex === '0' ? '' : hex, 'hex');
+  const pad = s.match(/^1*/)?.[0].length ?? 0; // leading '1's = zero bytes
+  return Buffer.concat([Buffer.alloc(pad), bytes]);
+}
+
+/**
+ * Pull the deposit memo out of a normalized Solana tx — scan outer AND
+ * inner instructions for a Memo-program call, decode its data. Two wire
+ * shapes exist: `parsed` (jsonParsed encoding → memo text directly) and
+ * `programIdIndex`+`data` (base64/base58 instruction form → decode). The
+ * FIRST memo instruction wins; a sender needing several has already broken
+ * the exchange convention.
+ */
+function extractSolMemo(meta: any): string | undefined {
+  const keys: any[] = meta?.transaction?.message?.accountKeys ?? [];
+  const programAt = (ix: any): string => {
+    const direct = ix?.programId;
+    if (typeof direct === 'string') return direct;
+    const k = keys[ix?.programIdIndex];
+    return typeof k === 'string' ? k : k?.pubkey ?? '';
+  };
+  const outer = meta?.transaction?.message?.instructions ?? [];
+  const inner = (meta?.meta?.innerInstructions ?? []).flatMap(
+    (g: any) => g.instructions ?? [],
+  );
+  for (const ix of [...outer, ...inner]) {
+    if (!SOL_MEMO_PROGRAMS.has(programAt(ix))) continue;
+    if (typeof ix.parsed === 'string') return ix.parsed;
+    if (typeof ix.data === 'string') {
+      const text = b58decode(ix.data)?.toString('utf8');
+      if (text) return text;
+    }
+  }
+  return undefined;
+}
+
 /** hex (41-prefixed or 20-byte) → TRON base58check address. */
 function tronBase58(hexAddr: string): string | null {
   try {
@@ -100,10 +156,18 @@ export class TatumProvider implements BlockchainProvider {
   readonly name = 'tatum';
   private readonly logger = new Logger(TatumProvider.name);
   private readonly http: AxiosInstance;
+  private readonly solRpc: AxiosInstance;
   private readonly network: 'testnet' | 'mainnet';
 
   constructor(private readonly config: ConfigService) {
     this.network = this.config.get('tatum.network') ?? 'testnet';
+    // Solana's own JSON-RPC — used ONLY for signature discovery on the
+    // shared custody address (Tatum exposes no SOL history surface).
+    this.solRpc = axios.create({
+      baseURL: this.config.get('tatum.solanaRpcUrl')
+        ?? 'https://api.devnet.solana.com',
+      timeout: 20_000,
+    });
     this.http = axios.create({
       baseURL: this.config.get('tatum.baseUrl') ?? 'https://api.tatum.io',
       headers: { 'x-api-key': this.config.get('tatum.apiKey') ?? '' },
@@ -221,6 +285,40 @@ export class TatumProvider implements BlockchainProvider {
   }
 
   async getTransaction(txid: string, chain: Chain, asset?: AssetDef): Promise<ProviderTx | null> {
+    // SOL goes RPC-first: Tatum's Solana index is demonstrably shallow —
+    // older txs 403 with sol.tx.not.found (wasted call per tx per cycle),
+    // and its postTokenBalances entries lack `owner` fields, which makes
+    // SPL output attribution map to the ATA instead of the depositable
+    // wallet (observed live: a real USDC deposit was silently skipped).
+    // The chain's own RPC is the canonical source either way; Tatum stays
+    // as a degraded fallback for RPC outages.
+    if (chain === 'SOL') {
+      try {
+        const { data } = await this.solRpc.post('', {
+          jsonrpc: '2.0', id: 'getTransaction', method: 'getTransaction',
+          params: [txid, { encoding: 'json', maxSupportedTransactionVersion: 0, commitment: 'finalized' }],
+        });
+        if (data?.error) throw new Error(`solana rpc getTransaction: ${JSON.stringify(data.error).slice(0, 300)}`);
+        // RPC is canonical for Solana — result:null means truly absent.
+        if (!data?.result) return null;
+        return this.normalizeTx(data, txid, chain, asset);
+      } catch (rpcErr: any) {
+        this.logger.warn(
+          `Solana RPC failed for ${txid.slice(0, 16)}… — degrading to Tatum: ${String(rpcErr.message).slice(0, 140)}`,
+        );
+      }
+      // RPC transport failed — degrade to Tatum.
+      try {
+        const { data } = await this.http.get(`/v3/solana/transaction/${txid}`);
+        return this.normalizeTx(data, txid, chain, asset);
+      } catch (err: any) {
+        if (
+          err.response?.status === 404 ||
+          String(err.response?.data?.errorCode ?? '').endsWith('tx.not.found')
+        ) return null;
+        throw err;
+      }
+    }
     const path = CHAIN_PATH[chain];
     try {
       const { data } = await this.http.get(`/v3/${path}/transaction/${txid}`);
@@ -336,6 +434,7 @@ export class TatumProvider implements BlockchainProvider {
           blockNumber: meta.slot ?? null,
           fee: meta.meta?.fee != null ? String(meta.meta.fee / 1e9) : undefined,
           status: solOk ? 'confirmed' : 'failed',
+          memo: extractSolMemo(meta),
           raw: data,
         };
       }
@@ -783,18 +882,82 @@ export class TatumProvider implements BlockchainProvider {
 
   /**
    * Per-address tx history — implemented for UTXO chains where Tatum offers
-   * a direct endpoint. EVM/SOL/TRON return [] (their per-address history
-   * needs indexer APIs that cost extra credits); deposit detection on those
-   * chains relies on balance deltas, not tx enumeration.
+   * a direct endpoint, and for SOL where the shared custody base address
+   * needs inbound scanning for memo attribution. EVM/TRON return [] (their
+   * per-address history needs indexer APIs that cost extra credits);
+   * deposit detection on those chains relies on balance deltas, not tx
+   * enumeration.
    * Uses the v4 unified history route — /v3/{chain}/transaction/address is
-   * officially deprecated. v4 returns {hash, blockNumber, outputs[{value,
-   * address}]} — value in base units, same shape normalizeTx already reads.
+   * officially deprecated. UTXO v4 returns {hash, blockNumber, outputs
+   * [{value,address}]} — value in base units, same shape normalizeTx reads.
    */
   async getAddressTransactions(
     address: string,
     asset: AssetDef,
     limit = 10,
   ): Promise<ProviderTx[]> {
+    if (asset.chain === 'SOL') {
+      // Tatum exposes no SOL address-history surface (v4 unified history
+      // is EVM-only — verified live against its chain enum), so signature
+      // discovery goes to the chain's own JSON-RPC: getSignaturesForAddress
+      // for native SOL. SPL sends do NOT land on the base address — the
+      // tokens settle on the owner's associated token account — so for
+      // token assets we first resolve the ATA(s) via getTokenAccountsByOwner
+      // and scan THEIR signatures. The Memo-program attribution rides in
+      // the transaction either way; the caller re-fetches full detail on
+      // NEW signatures only, keeping cost ~1 RPC call per asset per poll.
+      const rpc = async (method: string, params: unknown[]) => {
+        const { data } = await this.solRpc.post('', {
+          jsonrpc: '2.0', id: method, method, params,
+        });
+        if (data?.error) {
+          throw new Error(`solana rpc ${method}: ${JSON.stringify(data.error).slice(0, 300)}`);
+        }
+        return data?.result;
+      };
+      let sigs: { signature?: string; slot?: number; err?: unknown }[] = [];
+      if (asset.type === 'token') {
+        // Filter by the TOKEN PROGRAM, not {mint} — the mint filter makes
+        // the RPC deserialize the mint account and it hard-errors when the
+        // mint isn't a valid on-chain mint (observed live on devnet:
+        // "Token mint could not be unpacked"). programId always parses;
+        // the asset's mint is matched on the returned account data instead.
+        const atas =
+          ((await rpc('getTokenAccountsByOwner', [
+            address,
+            { programId: SPL_TOKEN_PROGRAM },
+            { encoding: 'jsonParsed' },
+          ]))?.value ?? [])
+            .filter(
+              (a: any) =>
+                a?.account?.data?.parsed?.info?.mint === asset.contract,
+            );
+        // One ATA per mint is the norm; bound the scan regardless.
+        for (const ata of atas.slice(0, 5)) {
+          sigs.push(
+            ...((await rpc('getSignaturesForAddress', [
+              ata.pubkey,
+              { limit },
+            ])) ?? []),
+          );
+        }
+      } else {
+        sigs =
+          (await rpc('getSignaturesForAddress', [address, { limit }])) ?? [];
+      }
+      const seen = new Set<string>();
+      return sigs
+        .filter((s) => s?.signature && !seen.has(s.signature) && seen.add(s.signature))
+        .map((s) => ({
+          txid: s.signature!,
+          chain: asset.chain,
+          outputs: [{ address, amount: '0' }], // placeholder — detail fetch fills real outputs
+          confirmations: 0,
+          blockNumber: s.slot ?? null,
+          status: s.err ? ('failed' as const) : ('confirmed' as const),
+          raw: s,
+        }));
+    }
     if (asset.chain !== 'BTC' && asset.chain !== 'LTC') return [];
     const v4Chain = asset.chain === 'BTC' ? 'bitcoin' : 'litecoin';
     try {

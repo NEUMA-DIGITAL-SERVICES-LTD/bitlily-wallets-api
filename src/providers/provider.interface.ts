@@ -24,6 +24,12 @@ export interface ProviderTx {
   blockNumber: number | null;
   fee?: string;
   status: 'pending' | 'confirmed' | 'failed';
+  /**
+   * Sender-attached deposit memo (SOL Memo program instruction text).
+   * Only set when the chain supports memos AND the tx carries one —
+   * shared-custody attribution keys off this; absence is meaningful.
+   */
+  memo?: string;
   raw: Record<string, unknown>;
 }
 

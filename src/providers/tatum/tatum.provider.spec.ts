@@ -86,6 +86,160 @@ describe('TatumProvider', () => {
       expect(await p.getLatestBlock('SOL')).toBe(0);
       expect(get).not.toHaveBeenCalled();
     });
+
+    it('reads SOL tx detail from the canonical RPC — Tatum never gets consulted', async () => {
+      const get = jest.fn();
+      const post = jest.fn().mockResolvedValue({ data: { result: solTx() } });
+      const p = makeProvider({ get, post });
+      const tx = await p.getTransaction('sig', 'SOL', SOL_ASSET);
+      expect(post).toHaveBeenCalledWith('', expect.objectContaining({
+        method: 'getTransaction',
+        params: ['sig', expect.objectContaining({ encoding: 'json' })],
+      }));
+      expect(get).not.toHaveBeenCalled();
+      expect(tx?.status).toBe('confirmed');
+    });
+
+    it('returns null when the canonical RPC reports the tx absent — null means truly gone (reorg reversal path)', async () => {
+      const post = jest.fn().mockResolvedValue({ data: { result: null } });
+      const p = makeProvider({ post });
+      expect(await p.getTransaction('sig', 'SOL', SOL_ASSET)).toBeNull();
+    });
+
+    it('degrades to Tatum when the RPC transport fails', async () => {
+      const post = jest.fn().mockRejectedValue(new Error('ENOTFOUND'));
+      const get = jest.fn().mockResolvedValue({ data: solTx() });
+      const p = makeProvider({ get, post });
+      const tx = await p.getTransaction('sig', 'SOL', SOL_ASSET);
+      expect(get).toHaveBeenCalledWith('/v3/solana/transaction/sig');
+      expect(tx?.status).toBe('confirmed');
+    });
+
+    it('still returns null for other chains on tx.not.found — no RPC fallback exists there', async () => {
+      const notFound = { response: { status: 404, data: {} } };
+      const get = jest.fn().mockRejectedValue(notFound);
+      const post = jest.fn();
+      const p = makeProvider({ get, post });
+      expect(await p.getTransaction('txid', 'BTC', BTC_ASSET)).toBeNull();
+      expect(post).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Solana memo extraction', () => {
+    const MEMO_V2 = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+    const MEMO_V1 = 'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo';
+
+    /** Minimal base58 encoder for fixture data (memo bytes → instruction data). */
+    const b58 = (s: string): string => {
+      const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+      const bytes = Buffer.from(s, 'utf8');
+      let n = BigInt('0x' + bytes.toString('hex'));
+      let out = '';
+      while (n > 0n) { out = A[Number(n % 58n)] + out; n /= 58n; }
+      for (const b of bytes) { if (b === 0) out = '1' + out; else break; }
+      return out;
+    };
+
+    const solTxWithIx = (ix: any[], inner: any[] = []) => ({
+      slot: 506849209,
+      meta: { err: null, fee: 5000, innerInstructions: inner },
+      transaction: {
+        message: {
+          accountKeys: ['from-addr', 'to-addr', MEMO_V2],
+          instructions: ix,
+        },
+      },
+    });
+
+    it('decodes a base58 Memo-program instruction into tx.memo', async () => {
+      const get = jest.fn().mockResolvedValue({
+        data: solTxWithIx([{ programIdIndex: 2, data: b58('bl-abc12345'), accounts: [] }]),
+      });
+      const p = makeProvider({ get });
+      const tx = await p.getTransaction('sig', 'SOL', SOL_ASSET);
+      expect(tx?.memo).toBe('bl-abc12345');
+    });
+
+    it('accepts the jsonParsed wire shape — parsed string, direct programId', async () => {
+      const get = jest.fn().mockResolvedValue({
+        data: solTxWithIx([{ programId: MEMO_V2, parsed: 'bl-xyz98765' }]),
+      });
+      const p = makeProvider({ get });
+      const tx = await p.getTransaction('sig', 'SOL', SOL_ASSET);
+      expect(tx?.memo).toBe('bl-xyz98765');
+    });
+
+    it('finds memos in inner instructions and honors the v1 program id', async () => {
+      const tx = solTxWithIx([
+        { programIdIndex: 9, data: 'notamemo', accounts: [] }, // out-of-range program — skipped
+      ], [
+        { index: 0, instructions: [{ programId: MEMO_V1, parsed: 'bl-inner99' }] },
+      ]);
+      const get = jest.fn().mockResolvedValue({ data: tx });
+      const p = makeProvider({ get });
+      const res = await p.getTransaction('sig', 'SOL', SOL_ASSET);
+      expect(res?.memo).toBe('bl-inner99');
+    });
+
+    it('ignores non-Memo-program instruction data — arbitrary tx text is not a memo', async () => {
+      const get = jest.fn().mockResolvedValue({
+        data: solTxWithIx([{ programIdIndex: 0, data: b58('bl-fake1234'), accounts: [] }]),
+      });
+      const p = makeProvider({ get });
+      const tx = await p.getTransaction('sig', 'SOL', SOL_ASSET);
+      expect(tx?.memo).toBeUndefined();
+    });
+
+    it('memo is undefined on plain transfers — absence is meaningful to attribution', async () => {
+      const get = jest.fn().mockResolvedValue({ data: solTxWithIx([]) });
+      const p = makeProvider({ get });
+      const tx = await p.getTransaction('sig', 'SOL', SOL_ASSET);
+      expect(tx?.memo).toBeUndefined();
+    });
+  });
+
+  describe('Solana shared-address history', () => {
+    it('discovers native signatures via getSignaturesForAddress (no Tatum SOL surface exists)', async () => {
+      const post = jest.fn().mockResolvedValue({
+        data: { result: [{ signature: 'sig1', slot: 100, err: null }] },
+      });
+      const p = makeProvider({ post });
+      const txs = await p.getAddressTransactions('base-addr', SOL_ASSET, 25);
+      expect(post).toHaveBeenCalledWith('', expect.objectContaining({
+        method: 'getSignaturesForAddress',
+        params: ['base-addr', { limit: 25 }],
+      }));
+      expect(txs[0]).toMatchObject({ txid: 'sig1', blockNumber: 100, status: 'confirmed' });
+    });
+
+    it('maps a failed signature to status failed — the caller never credits it', async () => {
+      const post = jest.fn().mockResolvedValue({
+        data: { result: [{ signature: 'sigX', slot: 100, err: { InstructionError: [] } }] },
+      });
+      const p = makeProvider({ post });
+      const txs = await p.getAddressTransactions('base-addr', SOL_ASSET, 25);
+      expect(txs[0].status).toBe('failed');
+    });
+
+    it('token scans resolve the owner\'s ATA by TOKEN PROGRAM + local mint filter — a non-mint server-side filter hard-errors on RPC', async () => {
+      const post = jest.fn()
+        .mockResolvedValueOnce({ data: { result: { value: [
+          { pubkey: 'ATA-mine', account: { data: { parsed: { info: { mint: USDC_SOL.contract } } } } },
+          { pubkey: 'ATA-other', account: { data: { parsed: { info: { mint: 'OtherMint1111111111111111111111111111' } } } } },
+        ] } } })
+        .mockResolvedValueOnce({ data: { result: [{ signature: 'sigT', slot: 55, err: null }] } });
+      const p = makeProvider({ post });
+      const txs = await p.getAddressTransactions('base-addr', USDC_SOL, 25);
+      expect(post).toHaveBeenNthCalledWith(1, '', expect.objectContaining({
+        method: 'getTokenAccountsByOwner',
+        params: ['base-addr', { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' }, { encoding: 'jsonParsed' }],
+      }));
+      expect(post).toHaveBeenNthCalledWith(2, '', expect.objectContaining({
+        method: 'getSignaturesForAddress',
+        params: ['ATA-mine', { limit: 25 }],
+      }));
+      expect(txs[0].txid).toBe('sigT');
+    });
   });
 
   describe('Solana balances', () => {

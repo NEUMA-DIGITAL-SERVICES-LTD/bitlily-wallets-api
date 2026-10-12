@@ -43,6 +43,17 @@ export class WalletAccount {
   baseAddress: string;
 
   /**
+   * Deposit memo for shared-custody chains (SOL): the sender writes this
+   * into the tx's Memo program instruction and the poller attributes the
+   * deposit by exact match. Globally unique — the shared base address is
+   * one pot across all tenants, so a memo must resolve to exactly one
+   * account. One memo covers every same-chain asset (SOL + SPL tokens).
+   */
+  @Index('uq_wallet_accounts_memo', { unique: true })
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  memo: string | null;
+
+  /**
    * Opaque custody reference — under KMS this is the Tatum KMS
    * signatureId for the enrolled mnemonic/key. Null under dev env-key
    * signing. NEVER contains secret material itself.

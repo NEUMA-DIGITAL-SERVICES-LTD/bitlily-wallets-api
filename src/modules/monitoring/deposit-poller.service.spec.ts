@@ -35,6 +35,7 @@ describe('DepositPollerService', () => {
   const makePoller = () => {
     addresses = {
       find: jest.fn().mockResolvedValue([dep]),
+      findOne: jest.fn().mockResolvedValue(null),
       update: jest.fn(),
       findOneOrFail: jest.fn(async () => {
         const [d] = await addresses.find();
@@ -52,6 +53,7 @@ describe('DepositPollerService', () => {
     custody = { find: jest.fn().mockResolvedValue([]) };
     txs = {
       find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue(null),
       update: jest.fn(),
     };
     m = {
@@ -68,7 +70,7 @@ describe('DepositPollerService', () => {
       getTransaction: jest.fn().mockResolvedValue(null),
     };
     ledger = { postEntry: jest.fn() };
-    notifier = { notify: jest.fn() };
+    notifier = { notify: jest.fn(), notifyEvent: jest.fn() };
     config = {
       get: jest.fn((k: string) =>
         k === 'detection.strategy' ? 'polling'
@@ -312,5 +314,229 @@ describe('DepositPollerService', () => {
 
     expect(ledger.postEntry).not.toHaveBeenCalled();
     expect(notifier.notify).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Shared-custody memo attribution (SOL): one base address serves every
+ * wallet — inbound txs are enumerated and the Memo program instruction
+ * resolves the wallet. Money-path tests: a wrong attribution is a fund
+ * loss; a missed one strands user funds in custody.
+ */
+describe('DepositPollerService — shared-custody memo scan (SOL)', () => {
+  const BASE = 'SoLbaseAddreSS111111111111111111111111';
+  const solWallet = { id: 'w-sol', appId: 'acme' };
+  const solDep = {
+    id: 'dep-sol',
+    address: BASE,
+    chain: 'SOL',
+    asset: 'SOL',
+    status: 'active',
+    creditedAmount: '0',
+    account: { memo: 'bl-abc12345', wallet: solWallet },
+  } as unknown as DepositAddress;
+
+  let service: DepositPollerService;
+  let addresses: any;
+  let txs: any;
+  let custody: any;
+  let em: any;
+  let m: any;
+  let provider: any;
+  let ledger: any;
+  let notifier: any;
+
+  const historyItem = (txid: string) => ({
+    txid, chain: 'SOL',
+    outputs: [{ address: BASE, amount: '0' }],
+    confirmations: 0, blockNumber: 100,
+    status: 'confirmed' as const, raw: {},
+  });
+  const fullTx = (over: any = {}) => ({
+    txid: 'sigA', chain: 'SOL',
+    outputs: [{ address: BASE, amount: '0.5' }],
+    confirmations: 32, blockNumber: 100,
+    status: 'confirmed', memo: 'bl-abc12345', raw: {},
+    ...over,
+  });
+
+  beforeEach(() => {
+    addresses = {
+      find: jest.fn().mockResolvedValue([]), // no delta-detect rows — scan only
+      findOne: jest.fn(async (o: any) =>
+        o?.where?.account?.memo === 'bl-abc12345' ? solDep : null),
+      update: jest.fn(),
+      createQueryBuilder: jest.fn(() => ({
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+      })),
+    };
+    custody = {
+      find: jest.fn().mockResolvedValue([
+        { chain: 'SOL', baseAddress: BASE, treasuryAddress: BASE },
+      ]),
+    };
+    txs = {
+      find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue(null),
+      update: jest.fn(),
+    };
+    m = {
+      findOne: jest.fn(async (e: any) =>
+        e === DepositAddress ? { ...solDep } : null),
+      save: jest.fn(async (_e: any, o?: any) => o ?? _e),
+      create: jest.fn((_e: any, o: any) => o),
+      update: jest.fn(),
+    };
+    em = { transaction: jest.fn(async (cb: any) => cb(m)) };
+    provider = {
+      getAddressBalance: jest.fn(),
+      // Scan runs once per enabled SOL asset — only SOL native carries
+      // history here; USDC_SOL's fungible scan returns empty.
+      getAddressTransactions: jest.fn(async (_a: string, asset: any) =>
+        asset.code === 'SOL' ? [historyItem('sigA')] : []),
+      getLatestBlock: jest.fn().mockResolvedValue(0),
+      getTransaction: jest.fn().mockResolvedValue(fullTx()),
+    };
+    ledger = { postEntry: jest.fn() };
+    notifier = { notify: jest.fn(), notifyEvent: jest.fn() };
+    const config = {
+      get: jest.fn((k: string) =>
+        k === 'detection.strategy' ? 'polling'
+        : k === 'confirmations' ? { SOL: 32 }
+        : undefined),
+    };
+    service = new DepositPollerService(
+      addresses, txs, custody, em, provider, ledger, notifier, config as any,
+    );
+  });
+
+  it('credits the wallet whose memo matches — exact match only', async () => {
+    await service.poll();
+
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.wallet).toBe(solWallet);
+    expect(created.amount).toBe('0.500000000'); // SOL = 9 decimals
+    expect(created.status).toBe('confirmed'); // 32 confs = finalized
+    expect(created.raw).toMatchObject({ memo: 'bl-abc12345', unattributed: false });
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, solWallet, expect.anything(), 'deposit_confirmed', '0.500000000', 'credit',
+    );
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.confirmed', expect.anything());
+    expect(notifier.notifyEvent).not.toHaveBeenCalled();
+  });
+
+  it('records a memo-less deposit unattributed — real funds, ops queue, NO credit', async () => {
+    provider.getTransaction.mockResolvedValue(fullTx({ memo: undefined }));
+
+    await service.poll();
+
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.wallet).toBeNull();
+    expect(created.status).toBe('confirmed'); // on-chain truth — just uncredited
+    expect(created.raw.unattributed).toBe(true);
+    expect(notifier.notifyEvent).toHaveBeenCalledWith(
+      'deposit.unattributed',
+      expect.objectContaining({ txid: 'sigA', amount: '0.500000000', memo: null }),
+    );
+    expect(notifier.notify).not.toHaveBeenCalled(); // no tenant event — no owner yet
+  });
+
+  it('records an unknown memo unattributed — never guesses ownership', async () => {
+    provider.getTransaction.mockResolvedValue(fullTx({ memo: 'bl-nomatch0' }));
+
+    await service.poll();
+
+    expect(addresses.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          asset: 'SOL',
+          account: { memo: 'bl-nomatch0' },
+        }),
+      }),
+    );
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.wallet).toBeNull();
+    expect(created.raw.unattributed).toBe(true);
+  });
+
+  it('skips an already-recorded signature without a detail fetch', async () => {
+    txs.findOne.mockResolvedValue({ id: 'existing', status: 'confirmed', wallet: null });
+
+    await service.poll();
+
+    expect(provider.getTransaction).not.toHaveBeenCalled();
+    expect(m.create).not.toHaveBeenCalledWith(Transaction, expect.anything());
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('ignores a failed on-chain tx entirely', async () => {
+    provider.getTransaction.mockResolvedValue(fullTx({ status: 'failed', confirmations: 0 }));
+
+    await service.poll();
+
+    expect(m.create).not.toHaveBeenCalledWith(Transaction, expect.anything());
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notifyEvent).not.toHaveBeenCalled();
+  });
+
+  it('records below-threshold as pending, credits only after it advances', async () => {
+    provider.getTransaction.mockResolvedValue(fullTx({ confirmations: 10 }));
+
+    await service.poll();
+
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.status).toBe('pending');
+    expect(created.wallet).toBe(solWallet); // attribution known — just not final
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.pending', expect.anything());
+  });
+
+  it('advances an attributed pending row once confirmations reach the threshold', async () => {
+    const pending = {
+      id: 'tx-p', status: 'pending', wallet: solWallet,
+      txid: 'sigA', chain: 'SOL', asset: 'SOL',
+      amount: '0.500000000', confirmations: 10,
+    } as unknown as Transaction;
+    txs.findOne.mockResolvedValue(pending);
+    m.findOne.mockImplementation(async (e: any) =>
+      e === Transaction ? { ...pending, wallet: 'w-sol' } : null);
+
+    await service.poll();
+
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, solWallet, expect.objectContaining({ status: 'confirmed' }),
+      'deposit_confirmed', '0.500000000', 'credit',
+    );
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.confirmed', expect.anything());
+  });
+
+  it('scopes the memo lookup by the scanned asset — a token row resolves on its own asset', async () => {
+    provider.getAddressTransactions.mockImplementation(async (_a: string, asset: any) =>
+      asset.code === 'USDC_SOL' ? [historyItem('sigT')] : []);
+    provider.getTransaction.mockResolvedValue(fullTx({
+      txid: 'sigT',
+      outputs: [{ address: BASE, amount: '10' }],
+    }));
+    addresses.findOne.mockResolvedValue({
+      ...solDep, asset: 'USDC_SOL', creditedAmount: '0',
+    });
+
+    await service.poll();
+
+    expect(addresses.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          asset: 'USDC_SOL',
+          account: { memo: 'bl-abc12345' },
+        }),
+      }),
+    );
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.asset).toBe('USDC_SOL');
   });
 });

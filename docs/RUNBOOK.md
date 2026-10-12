@@ -218,3 +218,26 @@ The provider isolates all of these; if Tatum changes an enum, grep
 - SOL: no block-height endpoint (confirmations = finalized-at-index);
   SPL balances return UI units, EVM returns base units
 - KMS txids arrive as string/object/JSON-string — always unwrap
+
+## 10. Solana shared-address deposits (memo attribution)
+
+- **Tatum has no SOL address-history surface** — signature discovery and
+  tx detail both go to `SOLANA_RPC_URL` (canonical RPC). Tatum is only a
+  degraded fallback for tx detail during RPC outages.
+- Native SOL: `getSignaturesForAddress(shared base)`. SPL: deposits land
+  on the wallet's **associated token account**, not the base — the scan
+  resolves the owner's ATAs via `getTokenAccountsByOwner` filtered by the
+  TOKEN PROGRAM (not `{mint}` — a mint param the RPC can't unpack hard-
+  errors), then scans each ATA's signatures and filters by mint locally.
+- Every inbound to the shared base needs the wallet's memo
+  (`bl-xxxxxxxx`); no/foreign memo → `deposit.unattributed` → ops queue
+  (`GET /api/v1/admin/deposits/unattributed`, credit via
+  `POST .../deposits/:id/credit`). Never re-derive ownership from
+  amount/timing — the code doesn't, don't do it manually either.
+- Outbound txs on the base (sweeps, ops sends) net ≤0 to the base and are
+  re-checked harmlessly each cycle; they never create rows.
+- Testnet quirk: `enabledAssets()` returns raw registry contracts — only
+  `getAsset()` applies the `testnetContract` swap. Any new SPL scan code
+  must resolve assets through `getAsset` or it filters on the mainnet mint.
+- Public `api.devnet.solana.com` is rate-limited and flaky — fine for
+  staging; **production needs a dedicated `SOLANA_RPC_URL`**.

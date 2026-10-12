@@ -21,6 +21,7 @@ import {
 } from '../../providers/provider.interface';
 import { SECRET_STORE, SecretStore } from '../../secrets/secret-store';
 import { LedgerService } from '../../ledger/ledger.service';
+import { newDepositMemo } from '../../common/deposit-memo';
 import { errCode, errMsg } from '../../common/errors';
 
 @Injectable()
@@ -83,6 +84,8 @@ export class WalletsService {
               xpub: material.xpub,
               baseAddress: material.baseAddress,
               secretRef,
+              // Shared-custody chains (SOL) attribute deposits by this memo.
+              memo: material.baseAddress ? await this.uniqueMemo(em) : null,
             }),
           );
         }
@@ -162,6 +165,11 @@ export class WalletsService {
           xpub: material.xpub ?? null,
           baseAddress: material.baseAddress ?? null,
           secretRef,
+          // Shared-custody chains attribute deposits by memo — mint one at
+          // account creation so every watch row on this account resolves
+          // through it. Uniqueness is the partial index's job; orIgnore only
+          // covers the (wallet, chain) race, not a memo collision.
+          memo: material.baseAddress ? await this.uniqueMemo(this.accounts.manager) : null,
         })
         .orIgnore()
         .execute();
@@ -185,9 +193,29 @@ export class WalletsService {
       relations: ['account'],
       order: { createdAt: 'ASC' },
     });
-    const grouped = new Map<string, { address: string; chain: string; assets: string[]; expiresAt: null }>();
+    type AddressGroup = {
+      address: string;
+      chain: string;
+      assets: string[];
+      expiresAt: null;
+      memo?: string;
+      memoRequired?: boolean;
+    };
+    const grouped = new Map<string, AddressGroup>();
     for (const r of rows) {
-      const g = grouped.get(r.address) ?? { address: r.address, chain: r.chain, assets: [], expiresAt: null };
+      // Backfill memos on shared-custody accounts that predate the memo
+      // model — a memo-less SOL address shown to a client would funnel
+      // that user's deposits into the ops review queue.
+      if (r.account?.baseAddress && !r.account.memo) {
+        await this.ensureAccountMemo(this.dataSource.manager, r.account);
+      }
+      const g: AddressGroup =
+        grouped.get(r.address) ??
+        { address: r.address, chain: r.chain, assets: [], expiresAt: null };
+      if (r.account?.memo) {
+        g.memo = r.account.memo;
+        g.memoRequired = true;
+      }
       if (!g.assets.includes(r.asset)) g.assets.push(r.asset);
       grouped.set(r.address, g);
     }
@@ -277,6 +305,7 @@ export class WalletsService {
         if (existing) {
           existing.status = 'active';
           existing.expiresAt = null;
+          await this.ensureAccountMemo(em, account);
           const saved = await em.save(existing);
           await this.ensureSameChainWatches(
             em, account, saved.address, saved.derivationIndex, asset.code, null, reference,
@@ -308,6 +337,7 @@ export class WalletsService {
             existing.reference = reference ?? existing.reference;
             existing.expiresAt = expiresAt;
           }
+          await this.ensureAccountMemo(em, account);
           const saved = await em.save(existing);
           await this.ensureSameChainWatches(
             em, account, saved.address, saved.derivationIndex, asset.code,
@@ -334,6 +364,7 @@ export class WalletsService {
           expiresAt,
         }),
       );
+      await this.ensureAccountMemo(em, account);
 
       await this.ensureSameChainWatches(
         em, account, address, index, asset.code, expiresAt, reference,
@@ -356,6 +387,33 @@ export class WalletsService {
       }
       return dep;
     });
+  }
+
+  /**
+   * Shared-custody accounts (SOL) attribute deposits by memo — assign one
+   * at provisioning and backfill accounts that predate the memo model
+   * whenever they're touched. Without a memo a shared-address deposit can
+   * only go to the ops review queue, so every live account must carry one.
+   */
+  private async ensureAccountMemo(
+    em: EntityManager,
+    account: WalletAccount,
+  ): Promise<void> {
+    if (account.baseAddress && !account.memo) {
+      account.memo = await this.uniqueMemo(em);
+      await em.save(account);
+    }
+  }
+
+  /** Collisions are astronomically unlikely; the unique index is the real
+   * guard — this just avoids handing Postgres a violation on a retry loop. */
+  private async uniqueMemo(em: EntityManager): Promise<string> {
+    for (let i = 0; i < 5; i++) {
+      const memo = newDepositMemo();
+      const clash = await em.findOne(WalletAccount, { where: { memo } });
+      if (!clash) return memo;
+    }
+    throw new Error('Deposit memo generation exhausted retries');
   }
 
   /**
@@ -535,15 +593,14 @@ export class WalletsService {
     if (ensure?.length) {
       wanted = ensure;
     } else {
-      // Auto-all = chains with HD-derivable (per-user) addresses. Ensure
-      // accounts exist for every enabled chain FIRST so the shared-vs-HD
-      // check is uniform for old and new wallets alike.
+      // Auto-all = every enabled chain's native asset. Shared-custody
+      // chains (SOL) are included: the account's deposit memo gives them
+      // per-user attribution, so their single address is provisionable
+      // like any other.
       const allChains = [...new Set(enabledAssets().map((a) => a.chain))];
       await this.ensureChainAccounts(wallet.id, appId, allChains);
-      const accts = await this.accounts.find({ where: { wallet: { id: wallet.id } } });
-      const shared = new Set(accts.filter((a) => !a.xpub && a.baseAddress).map((a) => a.chain));
       wanted = enabledAssets()
-        .filter((a) => a.type === 'native' && !shared.has(a.chain))
+        .filter((a) => a.type === 'native')
         .map((a) => a.code);
     }
 

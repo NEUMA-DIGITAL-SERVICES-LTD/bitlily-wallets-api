@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, BadRequestException, NotFoundException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, BadRequestException, NotFoundException, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -90,6 +90,18 @@ class UpdateClientDto {
   @IsBoolean()
   @IsOptional()
   rotate?: boolean;
+}
+
+class CreditDepositDto {
+  @ApiProperty({ description: 'Tenant slug owning the destination wallet' })
+  @IsString()
+  @IsNotEmpty()
+  appId: string;
+
+  @ApiProperty({ description: 'The tenant-side user id to credit' })
+  @IsString()
+  @IsNotEmpty()
+  externalUserId: string;
 }
 
 class EnrollCustodyDto {
@@ -315,5 +327,31 @@ export class AdminController {
   })
   reject(@Param('id') id: string) {
     return this.transactions.rejectWithdrawal(id);
+  }
+
+  @Get('deposits/unattributed')
+  @ApiOperation({
+    summary:
+      'OPS review queue — verified on-chain deposits to shared custody ' +
+      'addresses (SOL) whose memo resolved no wallet. These are real ' +
+      'funds awaiting manual attribution; they credit no one until ' +
+      'POST /deposits/:id/credit runs.',
+  })
+  listUnattributed(@Query('chain') chain?: string) {
+    return this.transactions.listUnattributedDeposits(chain);
+  }
+
+  @Post('deposits/:id/credit')
+  @ApiOperation({
+    summary:
+      'Manually credit an unattributed shared-address deposit to a ' +
+      'specific wallet. Explicit target (appId + externalUserId), ' +
+      'idempotent — an already-attributed deposit returns 409 rather ' +
+      'than double-crediting.',
+  })
+  creditDeposit(@Param('id') id: string, @Body() dto: CreditDepositDto) {
+    return this.transactions.creditUnattributedDeposit(
+      id, dto.appId, dto.externalUserId,
+    );
   }
 }

@@ -318,3 +318,130 @@ describe('TransactionsService.listForApp', () => {
     expect(res).toEqual({ data: [], total: 0, page: 9, limit: 20 });
   });
 });
+
+/**
+ * OPS manual credit for unattributed shared-custody deposits (SOL
+ * missing/wrong memo): attribution must be explicit, idempotent (an
+ * already-attributed deposit can never double-credit), and auditable.
+ */
+describe('TransactionsService.creditUnattributedDeposit', () => {
+  const wallet = { id: 'w1', appId: 'acme', externalUserId: 'user-1' };
+  const unattributed = {
+    id: 'tx-u',
+    wallet: null,
+    direction: 'inbound',
+    chain: 'SOL',
+    asset: 'SOL',
+    txid: 'sigA',
+    address: 'SoLbase111',
+    amount: '0.500000000',
+    status: 'confirmed',
+    raw: { detectedVia: 'memo-polling', memo: null, unattributed: true },
+  } as unknown as Transaction;
+
+  let service: TransactionsService;
+  let txs: any;
+  let wallets: any;
+  let ledger: any;
+  let notifier: any;
+  let dataSource: any;
+  let m: any;
+
+  beforeEach(() => {
+    m = {
+      findOne: jest.fn().mockResolvedValue({ ...unattributed }),
+      save: jest.fn(async (_e: any, o?: any) => o ?? _e),
+      create: jest.fn((_e: any, o: any) => o),
+      update: jest.fn(),
+    };
+    txs = {};
+    wallets = { findOne: jest.fn().mockResolvedValue(wallet) };
+    ledger = { postEntry: jest.fn() };
+    notifier = { notify: jest.fn() };
+    dataSource = { transaction: jest.fn(async (cb: any) => cb(m)) };
+    service = new TransactionsService(
+      txs, wallets, {} as any, {} as any, ledger, notifier,
+      { get: jest.fn().mockReturnValue({}) } as any,
+      dataSource,
+    );
+  });
+
+  it('credits the named wallet, posts the ledger entry, and audits attribution', async () => {
+    const tx = await service.creditUnattributedDeposit('tx-u', 'acme', 'user-1');
+
+    expect(m.findOne).toHaveBeenCalledWith(
+      Transaction,
+      expect.objectContaining({
+        where: { id: 'tx-u' },
+        lock: { mode: 'pessimistic_write' },
+      }),
+    );
+    const saved = m.save.mock.calls[0][0];
+    expect(saved.wallet).toBe(wallet);
+    expect(saved.raw.unattributed).toBe(false);
+    expect(saved.raw.attribution).toMatchObject({ by: 'admin', appId: 'acme', externalUserId: 'user-1' });
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, wallet, saved, 'deposit_confirmed', '0.500000000', 'credit',
+    );
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.confirmed', tx);
+  });
+
+  it('rejects a second credit — already-attributed rows conflict, never double-credit', async () => {
+    m.findOne.mockResolvedValue({ ...unattributed, wallet: 'w-other' });
+
+    await expect(
+      service.creditUnattributedDeposit('tx-u', 'acme', 'user-1'),
+    ).rejects.toThrow(/already attributed/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notify).not.toHaveBeenCalled();
+  });
+
+  it('404s when the target wallet does not exist under that app', async () => {
+    wallets.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.creditUnattributedDeposit('tx-u', 'acme', 'ghost-user'),
+    ).rejects.toThrow(/No wallet/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('rejects crediting a deposit that has not confirmed on-chain', async () => {
+    m.findOne.mockResolvedValue({ ...unattributed, status: 'pending' });
+
+    await expect(
+      service.creditUnattributedDeposit('tx-u', 'acme', 'user-1'),
+    ).rejects.toThrow(/only confirmed deposits/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('rejects outbound rows and deposits not flagged unattributed', async () => {
+    m.findOne.mockResolvedValue({ ...unattributed, direction: 'outbound' });
+    await expect(
+      service.creditUnattributedDeposit('tx-u', 'acme', 'user-1'),
+    ).rejects.toThrow(/inbound deposits/);
+
+    m.findOne.mockResolvedValue({ ...unattributed, raw: { detectedVia: 'polling' } });
+    await expect(
+      service.creditUnattributedDeposit('tx-u', 'acme', 'user-1'),
+    ).rejects.toThrow(/not flagged unattributed/);
+  });
+
+  it('the ops queue lists only wallet-less inbound rows flagged unattributed', async () => {
+    const qb: any = {
+      where: jest.fn(() => qb),
+      andWhere: jest.fn(() => qb),
+      orderBy: jest.fn(() => qb),
+      take: jest.fn(() => qb),
+      getMany: jest.fn().mockResolvedValue([unattributed]),
+    };
+    txs.createQueryBuilder = jest.fn(() => qb);
+
+    const res = await service.listUnattributedDeposits('sol');
+
+    expect(qb.where).toHaveBeenCalledWith('t.wallet_id IS NULL');
+    expect(qb.andWhere).toHaveBeenCalledWith(`t.raw ->> 'unattributed' = 'true'`);
+    expect(qb.andWhere).toHaveBeenCalledWith('t.chain = :chain', { chain: 'SOL' });
+    expect(res[0]).toMatchObject({ txid: 'sigA', memo: null });
+    expect(res[0]).not.toHaveProperty('raw'); // provider blobs stay off the wire
+  });
+});
