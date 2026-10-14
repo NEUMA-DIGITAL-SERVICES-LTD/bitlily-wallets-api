@@ -353,6 +353,7 @@ describe('TransactionsService.creditUnattributedDeposit', () => {
       save: jest.fn(async (_e: any, o?: any) => o ?? _e),
       create: jest.fn((_e: any, o: any) => o),
       update: jest.fn(),
+      increment: jest.fn(),
     };
     txs = {};
     wallets = { findOne: jest.fn().mockResolvedValue(wallet) };
@@ -382,6 +383,15 @@ describe('TransactionsService.creditUnattributedDeposit', () => {
     expect(saved.raw.attribution).toMatchObject({ by: 'admin', appId: 'acme', externalUserId: 'user-1' });
     expect(ledger.postEntry).toHaveBeenCalledWith(
       m, wallet, saved, 'deposit_confirmed', '0.500000000', 'credit',
+    );
+    // The manual credit must advance the delta baseline — otherwise the
+    // next poll re-detects the same balance growth and mints a second
+    // credit under a synthetic poll:* txid (live double-credit on TRON).
+    expect(m.increment).toHaveBeenCalledWith(
+      expect.anything(),
+      { address: 'SoLbase111', asset: 'SOL' },
+      'creditedAmount',
+      0.5,
     );
     expect(notifier.notify).toHaveBeenCalledWith('deposit.confirmed', tx);
   });

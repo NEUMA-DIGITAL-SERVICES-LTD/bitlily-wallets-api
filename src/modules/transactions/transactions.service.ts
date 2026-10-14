@@ -11,6 +11,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
@@ -131,6 +132,17 @@ export class TransactionsService {
       await m.save(t);
       await this.ledger.postEntry(
         m, wallet, t, 'deposit_confirmed', t.amount, 'credit',
+      );
+      // Unattributed deposits never entered creditedAmount — bump the
+      // deposit-address baseline or the next poll re-detects the same
+      // delta and mints a second credit under a synthetic poll:* txid.
+      // Shared-custody rows can be bumped harmlessly: the delta path
+      // never reads them.
+      await m.increment(
+        DepositAddress,
+        { address: t.address, asset: t.asset },
+        'creditedAmount',
+        parseFloat(t.amount),
       );
       return t;
     });

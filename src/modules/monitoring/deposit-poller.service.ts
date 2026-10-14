@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectEntityManager, InjectRepository } from '@nestjs/typeorm';
 import { Cron } from '@nestjs/schedule';
-import { EntityManager, Repository, IsNull, MoreThan, Or } from 'typeorm';
+import { EntityManager, Like, Repository, IsNull, MoreThan, Or } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
@@ -423,12 +423,22 @@ export class DepositPollerService {
           (await m.findOne(Transaction, {
             where: { txid, address: dep.address, asset: asset.code, direction: 'inbound' },
           })) ??
-          // Adopt a pending row from an earlier unattributed poll — without
-          // this, a real txid showing up later would create a second row for
-          // the same funds and double-credit on confirm.
-          (await m.findOne(Transaction, {
-            where: { address: dep.address, asset: asset.code, direction: 'inbound', status: 'pending' },
-          }));
+          // Adopt a pending SYNTHETIC row from an earlier unattributed
+          // poll — the Like('poll:%') guard keeps a webhook-created
+          // pending row (real txid, awaiting confirmations) out of the
+          // delta path's reach. Skipped when the hit's amount exceeds
+          // the uncredited delta: that tx's funds are already inside
+          // creditedAmount and adopting it would double-credit. (Confirmed
+          // synthetic rows are deliberately NOT adoptable here — a
+          // same-amount covered tx sharing the window would rekey the
+          // credit and marker-sync past the new delta, silently
+          // swallowing a real deposit.)
+          (hit?.txid == null ||
+           parseFloat(hitAmount ?? '0') <= freshDelta + 1e-8
+            ? await m.findOne(Transaction, {
+                where: { address: dep.address, asset: asset.code, direction: 'inbound', status: 'pending', txid: Like('poll:%') },
+              })
+            : null);
         if (existing) {
           existing.confirmations = reportConfs;
           existing.blockNumber = hit?.blockNumber ?? existing.blockNumber;
@@ -465,6 +475,11 @@ export class DepositPollerService {
           return m.save(existing);
         }
 
+        // A hit whose amount EXCEEDS the uncredited delta was already
+        // counted inside creditedAmount by an earlier synthetic credit —
+        // the row records the real txid but must not post a second entry.
+        const covered =
+          hit != null && parseFloat(hitAmount!) > freshDelta + 1e-8;
         const t = await m.save(
           m.create(Transaction, {
             wallet: dep.account.wallet,
@@ -474,15 +489,24 @@ export class DepositPollerService {
             txid,
             address: dep.address,
             amount: hitAmount ?? freshDelta.toFixed(asset.decimals),
-            status: confirmed ? 'confirmed' : 'pending',
+            status: confirmed || covered ? 'confirmed' : 'pending',
             confirmations: reportConfs,
             requiredConfirmations: req,
             blockNumber: hit?.blockNumber ?? null,
             reference: dep.reference,
-            raw: { detectedVia: 'polling', observedBalance: observed },
+            raw: {
+              detectedVia: 'polling',
+              observedBalance: observed,
+              ...(covered ? { coveredByBaseline: true } : {}),
+            },
           }),
         );
-        if (confirmed) {
+        if (covered) {
+          this.logger.warn(
+            `${dep.address} ${asset.code} tx ${txid} is inside the credited baseline — recorded without a second credit`,
+          );
+        }
+        if (confirmed && !covered) {
           const amt = hitAmount ?? freshDelta.toFixed(asset.decimals);
           await this.ledger.postEntry(
             m, dep.account.wallet, t, 'deposit_confirmed',

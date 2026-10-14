@@ -18,7 +18,10 @@ export type TxStatus =
   | 'failed'
   | 'reorged'
   | 'requires_approval'
-  | 'rejected';
+  | 'rejected'
+  // A pending placeholder whose funds were already credited by a sibling
+  // row (delta-path synthetic credit adopted by the real txid).
+  | 'superseded';
 
 /**
  * An observed or initiated on-chain transaction. Uniqueness on

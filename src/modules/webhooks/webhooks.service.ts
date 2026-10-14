@@ -14,7 +14,7 @@ import {
 import { LedgerService } from '../../ledger/ledger.service';
 import { NotifierService } from '../notifications/notifier.service';
 import { errCode, errMsg } from '../../common/errors';
-import { getAsset } from '../../config/assets';
+import { AssetDef, getAsset } from '../../config/assets';
 
 interface TatumAddressEvent {
   address?: string;
@@ -247,22 +247,58 @@ export class WebhooksService implements OnApplicationBootstrap {
     const confirmed = chainTx.confirmations >= required;
 
     const tx = await this.em.transaction(async (m) => {
-      const t = await this.upsertTransaction(m, dep, payload, output.amount, chainTx, required, confirmed);
-      if (confirmed && t.status === 'confirmed') {
+      const res = await this.upsertTransaction(
+        m, dep, payload, output.amount, chainTx, required, confirmed, asset,
+      );
+      if (res.credit) {
         await this.ledger.postEntry(
-          m, dep.account.wallet, t, 'deposit_confirmed', output.amount, 'credit',
+          m, dep.account.wallet, res.tx, 'deposit_confirmed', output.amount, 'credit',
         );
+        await this.bumpCredited(m, dep, output.amount);
       }
-      return t;
+      return res;
     });
 
-    await this.notifier.notify(
-      confirmed ? 'deposit.confirmed' : 'deposit.pending',
-      tx,
-    );
-    return confirmed ? 'credited' : 'pending_confirmations';
+    if (!tx.suppressNotify) {
+      await this.notifier.notify(
+        tx.tx.status === 'confirmed' ? 'deposit.confirmed' : 'deposit.pending',
+        tx.tx,
+      );
+    }
+    return tx.tx.status === 'confirmed' ? 'credited' : 'pending_confirmations';
   }
 
+  /**
+   * Advance the deposit-address credited baseline for funds credited by a
+   * NON-poller path. The delta scan computes `observed - creditedAmount` —
+   * a webhook or manual credit that skips this gets re-detected next poll
+   * and mints a second credit under a synthetic poll:* txid (seen live:
+   * a TRX deposit credited once by webhook and again by the poller).
+   * Shared-custody rows are skipped: the delta path never reads them.
+   */
+  private async bumpCredited(
+    m: EntityManager,
+    dep: DepositAddress,
+    amount: string,
+  ): Promise<void> {
+    if (dep.account?.baseAddress) return;
+    await m.increment(
+      DepositAddress, { id: dep.id }, 'creditedAmount', parseFloat(amount),
+    );
+  }
+
+  /**
+   * Dedupe order for an inbound deposit on a dedicated address:
+   *  1. exact real-txid row — advance confirmations (idempotent redelivery)
+   *  2. synthetic poll:* sibling with the SAME amount — the delta path
+   *     already credited (or is tracking) these funds; rekey it to the
+   *     real txid so one physical deposit keeps ONE row. The ledger entry
+   *     stays attached to the row — adopting a confirmed row posts nothing.
+   *  3. baseline headroom — a confirmed-but-mismatched synthetic row means
+   *     this tx may sit inside a multi-tx delta credit. Credit only if the
+   *     chain balance exceeds creditedAmount by at least this tx's amount;
+   *     otherwise record it confirmed-without-credit (coveredByBaseline).
+   */
   private async upsertTransaction(
     m: EntityManager,
     dep: DepositAddress,
@@ -271,20 +307,111 @@ export class WebhooksService implements OnApplicationBootstrap {
     chainTx: { confirmations: number; blockNumber: number | null; raw: any },
     required: number,
     confirmed: boolean,
-  ): Promise<Transaction> {
+    asset: AssetDef,
+  ): Promise<{ tx: Transaction; credit: boolean; suppressNotify?: boolean }> {
     const existing = await m.findOne(Transaction, {
       // direction:'inbound' — same txid can exist as outbound when a send
       // lands on our own watched address; don't swallow the deposit row.
       where: { txid: payload.txId, address: dep.address, asset: dep.asset, direction: 'inbound' },
     });
     if (existing) {
-      // Update confirmation progress; a reorg can also un-confirm — reflect it.
+      // Credit exactly on the pending→confirmed transition: first delivery
+      // records pending, the confirming redelivery posts the entry once.
+      // Confirmed→confirmed redeliveries must NOT re-post (the old code
+      // double-credited there — event-key dedup was the only thing saving
+      // it). Confirmed→pending (reorg) also skips — reverifyRecent owns
+      // reversals.
+      if (existing.status === 'superseded') {
+        // Tombstone: the row already yielded its txid to a credited
+        // sibling — a redelivery must not resurrect or re-credit it.
+        return { tx: existing, credit: false, suppressNotify: true };
+      }
+      const wasPending = existing.status === 'pending';
       existing.confirmations = chainTx.confirmations;
-      existing.status = confirmed ? 'confirmed' : 'pending';
       existing.blockNumber = chainTx.blockNumber;
-      return m.save(existing);
+      if (confirmed && wasPending) {
+        // While this row waited for confirmations the delta path may have
+        // credited the same funds under a synthetic poll:* txid — verify
+        // coverage before posting.
+        const coverage = await this.resolveCoverage(
+          m, dep, !!dep.account?.baseAddress,
+          {
+            txid: payload.txId, address: dep.address, asset: dep.asset,
+            amount, confirmations: chainTx.confirmations,
+            blockNumber: chainTx.blockNumber,
+          },
+          existing, asset, confirmed,
+        );
+        if (coverage.action === 'retry') {
+          await m.save(existing); // stays pending — sweep re-evaluates
+          return { tx: existing, credit: false, suppressNotify: true };
+        }
+        if (coverage.action !== 'credit') {
+          // 'adopted' → synthetic sibling rekeyed, this row superseded;
+          // 'covered' → funds already inside the baseline.
+          if (coverage.action === 'covered') {
+            existing.status = 'confirmed';
+            existing.raw = { ...(existing.raw as any), coveredByBaseline: true };
+          }
+          return { tx: await m.save(existing), credit: false, suppressNotify: true };
+        }
+        existing.status = 'confirmed';
+        return { tx: await m.save(existing), credit: true };
+      }
+      // Any other redelivery is a no-transition refresh — only confs/block
+      // advanced. Re-notifying deposit.confirmed on every Tatum retry reads
+      // as a second deposit downstream (observed: replaying a real txid
+      // emitted a phantom deposit.confirmed for an internal self-transfer).
+      existing.status = confirmed ? 'confirmed' : 'pending';
+      return { tx: await m.save(existing), credit: false, suppressNotify: true };
     }
-    return m.save(
+
+    const coverage = await this.resolveCoverage(
+      m, dep, !!dep.account?.baseAddress,
+      {
+        txid: payload.txId, address: dep.address, asset: dep.asset,
+        amount, confirmations: chainTx.confirmations, blockNumber: chainTx.blockNumber,
+      },
+      null, asset, confirmed,
+    );
+    if (coverage.action === 'adopted' || coverage.action === 'adopted-credit') {
+      return {
+        tx: coverage.row!,
+        credit: coverage.action === 'adopted-credit',
+      };
+    }
+    if (coverage.action === 'retry' || coverage.action === 'covered') {
+      const t = await m.save(
+        m.create(Transaction, {
+          wallet: dep.account.wallet,
+          direction: 'inbound',
+          chain: dep.chain,
+          asset: dep.asset,
+          txid: payload.txId,
+          address: dep.address,
+          amount,
+          confirmations: chainTx.confirmations,
+          requiredConfirmations: required,
+          blockNumber: chainTx.blockNumber,
+          status: coverage.action === 'covered' ? 'confirmed' : 'pending',
+          reference: dep.reference,
+          raw: coverage.action === 'covered'
+            ? { ...chainTx.raw, coveredByBaseline: true, detectedVia: 'webhook' }
+            : chainTx.raw,
+        }),
+      );
+      if (coverage.action === 'covered') {
+        // No client notification: deposit.confirmed already fired when the
+        // delta credit posted — a second one implies money that didn't move.
+        this.logger.warn(
+          `tx ${payload.txId}→${dep.address} is inside the credited baseline — recorded without a second credit`,
+        );
+        return { tx: t, credit: false, suppressNotify: true };
+      }
+      return { tx: t, credit: false };
+    }
+
+    const t = await m.save(
       m.create(Transaction, {
         wallet: dep.account.wallet,
         direction: 'inbound',
@@ -301,6 +428,107 @@ export class WebhooksService implements OnApplicationBootstrap {
         raw: chainTx.raw,
       }),
     );
+    return { tx: t, credit: confirmed };
+  }
+
+  /**
+   * Before crediting a real-txid deposit, decide whether its funds are
+   * already inside the address's credited baseline. The delta path credits
+   * balance growth under synthetic `poll:{addr}:{asset}:{balance}` txids —
+   * a webhook arriving on the same funds must merge, not double-book.
+   *
+   *   adopted        — a CONFIRMED synthetic sibling of equal amount gets
+   *                    rekeyed to the real txid (its credit stands); a
+   *                    pendingRow holding the txid yields it via rename.
+   *   adopted-credit — a PENDING synthetic sibling is rekeyed and the
+   *                    caller posts the credit it never made.
+   *   covered        — no matching sibling, but the baseline already
+   *                    includes this amount (multi-tx delta windows);
+   *                    record confirmed-without-credit.
+   *   retry          — baseline unreadable; keep pending, sweep retries.
+   *   credit         — genuinely new money; caller posts + bumps baseline.
+   */
+  private async resolveCoverage(
+    m: EntityManager,
+    dep: DepositAddress | null,
+    sharedCustody: boolean | undefined,
+    cand: {
+      txid: string; address: string; asset: string; amount: string;
+      confirmations: number; blockNumber: number | null;
+    },
+    pendingRow: Transaction | null,
+    asset: AssetDef,
+    confirmed: boolean,
+  ): Promise<{
+    action: 'adopted' | 'adopted-credit' | 'covered' | 'retry' | 'credit';
+    row?: Transaction;
+  }> {
+    const sib = await m.findOne(Transaction, {
+      where: {
+        address: cand.address,
+        asset: cand.asset,
+        direction: 'inbound',
+        txid: Like('poll:%'),
+      },
+      order: { createdAt: 'ASC' },
+    });
+    if (
+      sib &&
+      Math.abs(parseFloat(sib.amount) - parseFloat(cand.amount)) < 1e-8
+    ) {
+      if (sib.status === 'pending') {
+        // Pending placeholders never posted a credit — supersede rather
+        // than rekey when the real row already carries the txid.
+        if (pendingRow) {
+          sib.status = 'superseded';
+          sib.txid = `superseded:${sib.txid}`;
+          await m.save(sib);
+          return { action: 'credit' };
+        }
+        sib.txid = cand.txid;
+        sib.confirmations = cand.confirmations;
+        sib.blockNumber = cand.blockNumber;
+        sib.status = confirmed ? 'confirmed' : 'pending';
+        return {
+          action: confirmed ? 'adopted-credit' : 'adopted',
+          row: await m.save(sib),
+        };
+      }
+      // Confirmed synthetic sibling holds the credit — the real txid gets
+      // the label, not a second credit. If a pending real row already owns
+      // the txid it must release it for the rekey to fit the unique key.
+      if (pendingRow) {
+        pendingRow.txid = `superseded:${pendingRow.txid}`;
+        pendingRow.status = 'superseded';
+        await m.save(pendingRow);
+      }
+      sib.txid = cand.txid;
+      sib.confirmations = cand.confirmations;
+      sib.blockNumber = cand.blockNumber;
+      return { action: 'adopted', row: await m.save(sib) };
+    }
+
+    if (dep && !sharedCustody) {
+      try {
+        const observed = await this.provider.getAddressBalance(dep.address, asset);
+        const fresh = await m.findOne(DepositAddress, {
+          where: { id: dep.id },
+          select: ['creditedAmount'],
+          lock: { mode: 'pessimistic_write' },
+        });
+        const headroom =
+          parseFloat(observed) - parseFloat(fresh?.creditedAmount ?? '0');
+        if (headroom < parseFloat(cand.amount) - 1e-8) {
+          return { action: 'covered' };
+        }
+      } catch (e) {
+        this.logger.warn(
+          `Baseline check failed for ${cand.address} tx ${cand.txid}: ${errMsg(e)} — deferring`,
+        );
+        return { action: 'retry' };
+      }
+    }
+    return { action: 'credit' };
   }
 
   /**
@@ -367,19 +595,60 @@ export class WebhooksService implements OnApplicationBootstrap {
           await this.txs.save(tx);
           continue;
         }
-        await this.em.transaction(async (m) => {
+        const outcome = await this.em.transaction(async (m) => {
+          const out = chainTx.outputs.find(
+            (o) => o.address.toLowerCase() === tx.address.toLowerCase(),
+          );
+          const amt = out?.amount ?? tx.amount;
+
+          // Lock the baseline row (no join — FOR UPDATE can't hit nullable
+          // outer-join sides); account is immutable, load it separately.
+          const dep = await m.findOne(DepositAddress, {
+            where: { address: tx.address, asset: tx.asset },
+            loadRelationIds: true,
+            lock: { mode: 'pessimistic_write' },
+          });
+          const depAccountId = (dep?.account as unknown as { id: string })?.id;
+          const depAccount = depAccountId
+            ? await m.findOne(WalletAccount, { where: { id: depAccountId } })
+            : null;
+
+          // While this row sat pending the delta path may have credited
+          // the same funds under a synthetic poll:* txid — resolveCoverage
+          // merges, defers, or clears the credit decision.
+          const coverage = await this.resolveCoverage(
+            m, dep, !!depAccount?.baseAddress,
+            {
+              txid: tx.txid, address: tx.address, asset: tx.asset,
+              amount: amt, confirmations: chainTx.confirmations,
+              blockNumber: chainTx.blockNumber,
+            },
+            tx, asset, true,
+          );
+          if (coverage.action === 'retry') return 'retry';
+          if (coverage.action === 'adopted') return 'superseded';
+          if (coverage.action === 'covered') {
+            tx.confirmations = chainTx.confirmations;
+            tx.status = 'confirmed';
+            tx.blockNumber = chainTx.blockNumber;
+            tx.raw = { ...(tx.raw as any), coveredByBaseline: true };
+            await m.save(tx);
+            return 'covered';
+          }
+
           tx.confirmations = chainTx.confirmations;
           tx.status = 'confirmed';
           tx.blockNumber = chainTx.blockNumber;
           await m.save(tx);
-          const out = chainTx.outputs.find(
-            (o) => o.address.toLowerCase() === tx.address.toLowerCase(),
-          );
           await this.ledger.postEntry(
-            m, tx.wallet, tx, 'deposit_confirmed', out?.amount ?? tx.amount, 'credit',
+            m, tx.wallet, tx, 'deposit_confirmed', amt, 'credit',
           );
+          if (dep) await this.bumpCredited(m, dep, amt);
+          return 'credited';
         });
-        await this.notifier.notify('deposit.confirmed', tx);
+        if (outcome === 'credited') {
+          await this.notifier.notify('deposit.confirmed', tx);
+        }
       } catch (e) {
         this.logger.error(`Sweep failed for tx ${tx.txid}: ${errMsg(e)}`);
       }

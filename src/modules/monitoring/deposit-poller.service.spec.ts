@@ -540,3 +540,131 @@ describe('DepositPollerService — shared-custody memo scan (SOL)', () => {
     expect(created.asset).toBe('USDC_SOL');
   });
 });
+
+/**
+ * Cross-path dedupe — the delta path must never mint a second credit for
+ * funds already inside creditedAmount (webhook-credited deposits) or reach
+ * into pending rows the webhook path owns. Regression coverage for the
+ * live TRON double-credit found on 2026-10-14.
+ */
+describe('DepositPollerService × webhook dedupe', () => {
+  const wallet = { id: 'w1' };
+  const dep = {
+    id: 'dep1', address: 'Tdep1', chain: 'TRON', asset: 'TRX',
+    creditedAmount: '0', status: 'active', account: { wallet },
+  } as unknown as DepositAddress;
+
+  let service: DepositPollerService;
+  let addresses: any, txs: any, custody: any, em: any, m: any;
+  let provider: any, ledger: any, notifier: any, config: any;
+  let txRows: any[];
+
+  const isLikePoll = (v: any) => typeof v === 'object' && v !== null;
+
+  const makePoller = () => {
+    txRows = [];
+    addresses = {
+      find: jest.fn().mockResolvedValue([dep]),
+      findOne: jest.fn().mockResolvedValue(null),
+      update: jest.fn(),
+      findOneOrFail: jest.fn(async () => ({ creditedAmount: dep.creditedAmount })),
+      createQueryBuilder: jest.fn(() => ({
+        innerJoin: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        getCount: jest.fn().mockResolvedValue(0),
+      })),
+    };
+    custody = { find: jest.fn().mockResolvedValue([]) };
+    txs = { find: jest.fn().mockResolvedValue([]), findOne: jest.fn(), update: jest.fn() };
+    m = {
+      findOne: jest.fn(async (e: any, o: any) => {
+        if (e === DepositAddress) return { ...dep, creditedAmount: dep.creditedAmount };
+        if (e === Transaction) {
+          const w = o?.where ?? {};
+          return txRows.find((r) =>
+            (!w.txid || (isLikePoll(w.txid)
+              ? (r.txid ?? '').startsWith('poll:')
+              : r.txid === w.txid)) &&
+            (!w.address || r.address === w.address) &&
+            (!w.asset || r.asset === w.asset) &&
+            (!w.status || r.status === w.status) &&
+            (!w.direction || r.direction === w.direction),
+          ) ?? null;
+        }
+        return null;
+      }),
+      save: jest.fn(async (_e: any, o?: any) => {
+        const row = o ?? _e;
+        if (!txRows.includes(row)) txRows.push(row);
+        return row;
+      }),
+      create: jest.fn((_e: any, o: any) => o),
+      update: jest.fn(),
+    };
+    em = { transaction: jest.fn(async (cb: any) => cb(m)) };
+    provider = {
+      getAddressBalance: jest.fn(),
+      getAddressTransactions: jest.fn().mockResolvedValue([]),
+      getLatestBlock: jest.fn().mockResolvedValue(200),
+      getTransaction: jest.fn().mockResolvedValue(null),
+    };
+    ledger = { postEntry: jest.fn() };
+    notifier = { notify: jest.fn(), notifyEvent: jest.fn() };
+    config = {
+      get: jest.fn((k: string) =>
+        k === 'detection.strategy' ? 'polling'
+        : k === 'confirmations' ? { TRON: 1 }
+        : undefined),
+    };
+    service = new DepositPollerService(
+      addresses, txs, custody, em, provider, ledger, notifier, config,
+    );
+  };
+
+  beforeEach(makePoller);
+
+  it('does NOT adopt a webhook-created pending row (real txid) into the delta path', async () => {
+    // Webhook recorded a pending inbound with a REAL txid; the delta must
+    // not merge it — the row confirms through the webhook sweep, not here.
+    txRows.push({
+      txid: 'real-tx-webhook', address: 'Tdep1', asset: 'TRX',
+      direction: 'inbound', status: 'pending', amount: '0.5',
+    });
+    provider.getAddressBalance.mockResolvedValue('0.5');
+
+    await service.poll();
+
+    const wh = txRows.find((r) => r.txid === 'real-tx-webhook');
+    // The poll still records its own synthetic credit for the uncredited
+    // delta (account chain: confirms immediately) — but the webhook row's
+    // identity and amount are untouched.
+    expect(wh!.amount).toBe('0.5');
+    expect(wh!.txid).toBe('real-tx-webhook');
+    // Exactly one ledger credit total — for the poll row; the webhook
+    // row's credit path is superseded by the sweep, not here.
+    expect(ledger.postEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('hit amount exceeding the uncredited delta = covered — recorded, never re-credited', async () => {
+    // creditedAmount 0.5 already holds an old deposit (credited under a
+    // synthetic txid). Balance is 1.0: freshDelta=0.5 is genuinely new,
+    // but history surfaces the OLD 0.9-value... simulate: hit amount 0.9
+    // > freshDelta 0.5 → the tx predates the baseline.
+    dep.creditedAmount = '0.5';
+    provider.getAddressBalance.mockResolvedValue('1.0');
+    provider.getAddressTransactions.mockResolvedValue([{
+      txid: 'old-covered-tx', chain: 'TRON',
+      outputs: [{ address: 'Tdep1', amount: '0.9' }],
+      confirmations: 10, blockNumber: 190,
+    }]);
+
+    await service.poll();
+
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    const row = txRows.find((r) => r.txid === 'old-covered-tx');
+    expect(row).toBeDefined();
+    expect(row!.status).toBe('confirmed');
+    expect((row!.raw as any).coveredByBaseline).toBe(true);
+  });
+});
