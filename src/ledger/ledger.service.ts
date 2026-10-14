@@ -44,6 +44,22 @@ export class LedgerService {
     if (!(parseFloat(amount) > 0)) {
       throw new Error(`Refusing non-positive ledger amount: ${amount} (${kind})`);
     }
+    // Hard invariant: a deposit credit must trace to a real on-chain
+    // txid. The delta poller mints `poll:{addr}:{asset}:{balance}`
+    // placeholders for unexplained growth — crediting under those
+    // double-booked deposits the first time webhook + polling both saw
+    // the same funds (shasta incident). Unattributed deltas stay
+    // pending rows; they get credited after a real txid claims them
+    // (history hit, webhook adoption, or manual ops credit).
+    if (
+      kind === 'deposit_confirmed' &&
+      direction === 'credit' &&
+      tx.txid?.startsWith('poll:')
+    ) {
+      throw new Error(
+        `Refusing deposit_confirmed credit on synthetic txid ${tx.txid} — deposits need a real txid`,
+      );
+    }
     const existing = await manager.findOne(LedgerEntry, {
       where: { transaction: { id: tx.id }, kind },
     });

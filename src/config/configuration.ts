@@ -63,6 +63,44 @@ export const webhookConfig = registerAs('webhook', () => ({
   signingSecret: process.env.WEBHOOK_SIGNING_SECRET ?? '',
 }));
 
+export const historyConfig = registerAs('history', () => {
+  const testnet = (process.env.TATUM_NETWORK ?? 'testnet') !== 'mainnet';
+  return {
+    /**
+     * TronGrid — native + TRC20 address history for TRON deposits (Tatum
+     * has no per-address tx enumeration for TRON). Shasta on testnet.
+     */
+    tronGridUrl:
+      process.env.TRONGRID_URL ??
+      (testnet ? 'https://api.shasta.trongrid.io' : 'https://api.trongrid.io'),
+    /**
+     * Etherscan-compat explorers (/api?module=account&action=txlist|tokentx)
+     * for account-model address history. Blockscout serves the same shape.
+     * An empty url or a rejected key → history unavailable → the poller
+     * leaves deltas pending+unattributed rather than crediting a
+     * synthetic txid. Amoy has NO usable keyless indexer — plug a
+     * polygonscan (or Alchemy-proxy) key for staging; production needs
+     * paid explorer APIs or full webhook subscriptions anyway.
+     */
+    evm: {
+      ETH: {
+        url: process.env.HISTORY_ETH_URL ??
+          (testnet
+            ? 'https://eth-sepolia.blockscout.com/api'
+            : 'https://eth.blockscout.com/api'),
+        apiKey: process.env.HISTORY_ETH_API_KEY ?? '',
+      },
+      POLYGON: {
+        url: process.env.HISTORY_POLYGON_URL ??
+          (testnet
+            ? 'https://api-amoy.polygonscan.com/api'
+            : 'https://api.polygonscan.com/api'),
+        apiKey: process.env.HISTORY_POLYGON_API_KEY ?? '',
+      },
+    } as Record<string, { url: string; apiKey: string }>,
+  };
+});
+
 export const detectionConfig = registerAs('detection', () => ({
   strategy: (process.env.DEPOSIT_DETECTION ?? 'polling') as 'polling' | 'webhook',
   pollIntervalMs: parseInt(process.env.DEPOSIT_POLL_INTERVAL_MS ?? '120000', 10),

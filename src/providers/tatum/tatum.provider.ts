@@ -88,6 +88,36 @@ function b58decode(s: string): Buffer | null {
   return Buffer.concat([Buffer.alloc(pad), bytes]);
 }
 
+function b58encode(bytes: Buffer): string {
+  let n = BigInt(`0x${bytes.toString('hex') || '0'}`);
+  let out = '';
+  while (n > 0n) {
+    out = BASE58_ALPHABET[Number(n % 58n)] + out;
+    n /= 58n;
+  }
+  for (const b of bytes) {
+    if (b !== 0) break;
+    out = `1${out}`;
+  }
+  return out;
+}
+
+/**
+ * TronGrid raw_data hex ('41a2eb…') → base58check ('TQpe…'). Anything
+ * that isn't a well-formed TRON address payload returns null — the
+ * caller treats it as "not our output" rather than misattributing.
+ */
+function tronHexToBase58(hex: string): string | null {
+  const h = hex.replace(/^0x/, '').toLowerCase();
+  if (!/^41[0-9a-f]{40}$/.test(h)) return null;
+  const payload = Buffer.from(h, 'hex');
+  const cksum = createHash('sha256')
+    .update(createHash('sha256').update(payload).digest())
+    .digest()
+    .subarray(0, 4);
+  return b58encode(Buffer.concat([payload, cksum]));
+}
+
 /**
  * Pull the deposit memo out of a normalized Solana tx — scan outer AND
  * inner instructions for a Memo-program call, decode its data. Two wire
@@ -881,12 +911,11 @@ export class TatumProvider implements BlockchainProvider {
   }
 
   /**
-   * Per-address tx history — implemented for UTXO chains where Tatum offers
-   * a direct endpoint, and for SOL where the shared custody base address
-   * needs inbound scanning for memo attribution. EVM/TRON return [] (their
-   * per-address history needs indexer APIs that cost extra credits);
-   * deposit detection on those chains relies on balance deltas, not tx
-   * enumeration.
+   * Per-address tx history — UTXO chains via Tatum's unified endpoint,
+   * SOL via its own JSON-RPC (ATA scan for tokens), TRON via TronGrid
+   * (native + TRC20), EVM via any etherscan-compat explorer configured
+   * under history.evm. A missing/failing source returns [] — callers
+   * must tolerate unattributed deltas.
    * Uses the v4 unified history route — /v3/{chain}/transaction/address is
    * officially deprecated. UTXO v4 returns {hash, blockNumber, outputs
    * [{value,address}]} — value in base units, same shape normalizeTx reads.
@@ -958,6 +987,26 @@ export class TatumProvider implements BlockchainProvider {
           raw: s,
         }));
     }
+    if (asset.chain === 'TRON') {
+      try {
+        return await this.tronAddressTxs(address, asset, limit);
+      } catch (e) {
+        this.logger.warn(
+          `TronGrid history for ${address} failed: ${errMsg(e)} — delta stays unattributed this cycle`,
+        );
+        return [];
+      }
+    }
+    if (asset.chain === 'ETH' || asset.chain === 'POLYGON') {
+      try {
+        return await this.evmAddressTxs(address, asset, limit);
+      } catch (e) {
+        this.logger.warn(
+          `${asset.chain} explorer history for ${address} failed: ${errMsg(e)} — delta stays unattributed this cycle`,
+        );
+        return [];
+      }
+    }
     if (asset.chain !== 'BTC' && asset.chain !== 'LTC') return [];
     const v4Chain = asset.chain === 'BTC' ? 'bitcoin' : 'litecoin';
     try {
@@ -974,5 +1023,155 @@ export class TatumProvider implements BlockchainProvider {
       if (err.response?.status === 404) return [];
       throw err;
     }
+  }
+
+  /**
+   * TRON address history via TronGrid — Tatum exposes no per-address tx
+   * enumeration for TRON. `only_confirmed` restricts to solidified blocks
+   * (≈19 SR signatures, deeper than the 20-conf deposit requirement).
+   *
+   * Native TRX items carry `blockNumber` inline; TRC20 items don't, so
+   * each candidate's block is resolved via gettransactioninfobyid — cost
+   * is bounded by `limit` (≤5 extra calls per address per poll). If the
+   * info call fails the hit carries blockNumber=null and the poller keeps
+   * it pending rather than misjudging confirmations.
+   */
+  private async tronAddressTxs(
+    address: string,
+    asset: AssetDef,
+    limit: number,
+  ): Promise<ProviderTx[]> {
+    const base = this.config.get<string>('history.tronGridUrl') ?? '';
+    if (!base) return [];
+    if (asset.type === 'token') {
+      const { data } = await axios.get(
+        `${base}/v1/accounts/${address}/transactions/trc20`,
+        {
+          params: {
+            only_to: true, only_confirmed: true, limit,
+            ...(asset.contract ? { contract_address: asset.contract } : {}),
+          },
+          timeout: 15_000,
+        },
+      );
+      const items = (data?.data ?? []).filter(
+        (t: any) =>
+          t?.type === 'Transfer' &&
+          t?.to === address &&
+          // belt & suspenders: also sent as the query filter — a wrongly
+          // resolved contract must never attribute another token's credit
+          t?.token_info?.address === asset.contract,
+      );
+      const out: ProviderTx[] = [];
+      for (const t of items.slice(0, limit)) {
+        let blockNumber: number | null = null;
+        try {
+          const info = await axios.post(
+            `${base}/wallet/gettransactioninfobyid`,
+            { value: t.transaction_id },
+            { timeout: 15_000 },
+          );
+          blockNumber = info.data?.blockNumber ?? null;
+        } catch { /* stays null → pending until derivable */ }
+        out.push({
+          txid: t.transaction_id,
+          chain: asset.chain,
+          outputs: [{
+            address,
+            amount: fromRaw(String(t.value ?? '0'), asset.decimals),
+          }],
+          confirmations: 0,
+          blockNumber,
+          status: 'confirmed',
+          raw: t,
+        });
+      }
+      return out;
+    }
+    const { data } = await axios.get(
+      `${base}/v1/accounts/${address}/transactions`,
+      { params: { only_to: true, only_confirmed: true, limit }, timeout: 15_000 },
+    );
+    const out: ProviderTx[] = [];
+    for (const t of data?.data ?? []) {
+      const c = t?.raw_data?.contract?.[0];
+      const v = c?.parameter?.value ?? {};
+      if (c?.type !== 'TransferContract') continue;
+      if (t?.ret?.[0]?.contractRet !== 'SUCCESS') continue;
+      const to = typeof v.to_address === 'string'
+        ? tronHexToBase58(v.to_address)
+        : null;
+      if (to !== address) continue;
+      out.push({
+        txid: t.txID,
+        chain: asset.chain,
+        outputs: [{ address: to, amount: fromRaw(String(v.amount ?? '0'), asset.decimals) }],
+        confirmations: 0,
+        blockNumber: t.blockNumber ?? null,
+        status: 'confirmed',
+        raw: t,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * EVM address history via any etherscan-compat explorer
+   * (/api?module=account&action=txlist|tokentx) — works against
+   * Blockscout's legacy shim, polygonscan, etherscan, routescan alike.
+   * No url configured or a bad response → []: history is a bonus, never
+   * a trust source — every candidate is re-fetched via getTransaction
+   * before crediting anyway.
+   */
+  private async evmAddressTxs(
+    address: string,
+    asset: AssetDef,
+    limit: number,
+  ): Promise<ProviderTx[]> {
+    const e = this.config.get<Record<string, { url: string; apiKey: string }>>(
+      'history.evm',
+    )?.[asset.chain];
+    if (!e?.url) return [];
+    const params: Record<string, string | number> = {
+      module: 'account',
+      action: asset.type === 'token' ? 'tokentx' : 'txlist',
+      address,
+      page: 1,
+      offset: limit,
+      sort: 'desc',
+    };
+    if (asset.type === 'token' && asset.contract) {
+      params.contractaddress = asset.contract;
+    }
+    if (e.apiKey) params.apikey = e.apiKey;
+    const { data } = await axios.get(e.url, { params, timeout: 15_000 });
+    const items = Array.isArray(data?.result) ? data.result : [];
+    return items
+      .filter(
+        (t: any) =>
+          String(t?.to ?? '').toLowerCase() === address.toLowerCase() &&
+          String(t?.isError ?? '0') !== '1' &&
+          String(t?.txreceipt_status ?? '1') !== '0' &&
+          (asset.type !== 'token' ||
+            String(t?.contractAddress ?? '').toLowerCase() ===
+              (asset.contract ?? '').toLowerCase()),
+      )
+      .map((t: any) => ({
+        txid: t.hash,
+        chain: asset.chain,
+        outputs: [{
+          address: String(t.to),
+          amount: fromRaw(
+            String(t.value ?? '0'),
+            asset.type === 'token'
+              ? parseInt(t.tokenDecimal ?? '', 10) || asset.decimals
+              : asset.decimals,
+          ),
+        }],
+        confirmations: 0,
+        blockNumber: t.blockNumber ? parseInt(t.blockNumber, 10) : null,
+        status: 'confirmed' as const,
+        raw: t,
+      }));
   }
 }

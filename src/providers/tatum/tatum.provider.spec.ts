@@ -431,4 +431,166 @@ describe('TatumProvider', () => {
       ).rejects.toThrow(/never enrolled in KMS/);
     });
   });
+
+  describe('Address history — TRON (TronGrid) & EVM (etherscan-compat)', () => {
+    // The delta poller must attribute real txids on every chain —
+    // account-model history comes from indexers, not Tatum.
+    const DEP = 'TQpeU63gg1SZgDnsVT47fuWJkBQESJynYZ';
+    // 'TQpe…' hex form — the real deposit address's raw_data bytes.
+    const DEP_HEX = '41a2eb66abc7955c3c4eb4c2d5fe6b6aa36cd339ef';
+    const withHistory = (http: any) => {
+      jest.spyOn(axios, 'create').mockReturnValue({
+        ...http, interceptors: { response: { use: jest.fn() } },
+      } as any);
+      const config = {
+        get: (k: string) =>
+          k === 'tatum.network' ? 'testnet'
+            : k === 'history.tronGridUrl' ? 'https://api.shasta.trongrid.io'
+              : k === 'history.evm' ? {
+                  ETH: { url: 'https://eth-sepolia.blockscout.com/api', apiKey: '' },
+                  POLYGON: { url: 'https://api-amoy.polygonscan.com/api', apiKey: 'key1' },
+                }
+                : undefined,
+      } as ConfigService;
+      return new TatumProvider(config);
+    };
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('TRON native: parses raw_data TransferContract, converts hex to_address, skips failures', async () => {
+      const get = jest.spyOn(axios, 'get').mockResolvedValue({
+        data: { data: [
+          { txID: 'tx-good', blockNumber: 69221335,
+            ret: [{ contractRet: 'SUCCESS' }],
+            raw_data: { contract: [{ type: 'TransferContract',
+              parameter: { value: { to_address: DEP_HEX, amount: 7000000 } } }] } },
+          { txID: 'tx-fail', blockNumber: 69221336,
+            ret: [{ contractRet: 'REVERT' }],
+            raw_data: { contract: [{ type: 'TransferContract',
+              parameter: { value: { to_address: DEP_HEX, amount: 5 } } }] } },
+          { txID: 'tx-other-addr', blockNumber: 69221337,
+            ret: [{ contractRet: 'SUCCESS' }],
+            raw_data: { contract: [{ type: 'TransferContract',
+              parameter: { value: { to_address: '410a4f01a059116134759cda43005b9e1573a82fa5', amount: 9 } } }] } },
+        ] },
+      });
+      const p = withHistory({});
+      const txs = await p.getAddressTransactions(DEP, TRX_ASSET, 5);
+
+      expect(get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/accounts/'),
+        expect.objectContaining({ params: expect.objectContaining({ only_to: true, only_confirmed: true }) }),
+      );
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        txid: 'tx-good', blockNumber: 69221335,
+        outputs: [{ address: DEP, amount: '7' }],
+      });
+    });
+
+    it('TRON TRC20: filters contract + Transfer type + to; resolves blockNumber per tx', async () => {
+      const get = jest.spyOn(axios, 'get').mockResolvedValue({
+        data: { data: [
+          { transaction_id: 'tx-usdt', type: 'Transfer', to: DEP,
+            value: '1000000000',
+            token_info: { address: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' } },
+          { transaction_id: 'tx-wrong-contract', type: 'Transfer', to: DEP,
+            value: '999',
+            token_info: { address: 'TOTHERXXXXXXXXXXXXXXXXXXXXXXXXXX1' } },
+        ] },
+      });
+      const post = jest.spyOn(axios, 'post').mockResolvedValue({
+        data: { blockNumber: 69219265 },
+      });
+      const p = withHistory({});
+      const txs = await p.getAddressTransactions(DEP, USDT_TRON, 5);
+
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        txid: 'tx-usdt', blockNumber: 69219265,
+        outputs: [{ address: DEP, amount: '1000' }],
+      });
+      // contract_address passed as query filter too (server-side)
+      expect(get).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ params: expect.objectContaining({ contract_address: USDT_TRON.contract }) }),
+      );
+      expect(post).toHaveBeenCalledWith(
+        expect.stringContaining('gettransactioninfobyid'),
+        { value: 'tx-usdt' }, expect.anything(),
+      );
+    });
+
+    it('TRON TRC20: info call failure leaves blockNumber null — poller keeps it pending', async () => {
+      jest.spyOn(axios, 'get').mockResolvedValue({
+        data: { data: [{ transaction_id: 'tx-usdt', type: 'Transfer', to: DEP,
+          value: '1', token_info: { address: USDT_TRON.contract } }] },
+      });
+      jest.spyOn(axios, 'post').mockRejectedValue(new Error('timeout'));
+      const p = withHistory({});
+      const txs = await p.getAddressTransactions(DEP, USDT_TRON, 5);
+      expect(txs[0].blockNumber).toBeNull();
+    });
+
+    it('EVM: etherscan-compat txlist filters to-address + failures', async () => {
+      const get = jest.spyOn(axios, 'get').mockResolvedValue({
+        data: { status: '1', result: [
+          { hash: '0xdep', to: '0xC8319744bc1dc7216BE0CDFDF7d77Ac19C2D8CD6'.toLowerCase(),
+            value: '1500000000000000000', blockNumber: '100', isError: '0' },
+          { hash: '0xout', to: '0xother', value: '9', blockNumber: '99', isError: '0' },
+          { hash: '0xerr', to: '0xc8319744bc1dc7216be0cdfdf7d77ac19c2d8cd6',
+            value: '5', blockNumber: '98', isError: '1' },
+        ] },
+      });
+      const ETH_ASSET: AssetDef = { code: 'ETH', chain: 'ETH', type: 'native', decimals: 18 } as AssetDef;
+      const p = withHistory({});
+      const txs = await p.getAddressTransactions('0xc8319744bc1dc7216be0cdfdf7d77ac19c2d8cd6', ETH_ASSET, 5);
+      expect(txs).toHaveLength(1);
+      expect(txs[0]).toMatchObject({
+        txid: '0xdep', blockNumber: 100,
+        outputs: [{ amount: '1.5' }],
+      });
+      expect(get).toHaveBeenCalledWith(
+        'https://eth-sepolia.blockscout.com/api',
+        expect.objectContaining({ params: expect.objectContaining({ action: 'txlist', module: 'account' }) }),
+      );
+    });
+
+    it('EVM token: tokentx filters contractAddress case-insensitively and uses tokenDecimal', async () => {
+      jest.spyOn(axios, 'get').mockResolvedValue({
+        data: { status: '1', result: [
+          { hash: '0xusdc', to: '0xaddr', value: '2500000', blockNumber: '200',
+            contractAddress: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', tokenDecimal: '6' },
+          { hash: '0xother', to: '0xaddr', value: '1', blockNumber: '199',
+            contractAddress: '0xnotours', tokenDecimal: '6' },
+        ] },
+      });
+      const USDC_ETH: AssetDef = {
+        code: 'USDC_ETH', chain: 'ETH', type: 'token', decimals: 6,
+        contract: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+      } as AssetDef;
+      const p = withHistory({});
+      const txs = await p.getAddressTransactions('0xaddr', USDC_ETH, 5);
+      expect(txs).toHaveLength(1);
+      expect(txs[0].outputs[0].amount).toBe('2.5');
+    });
+
+    it('EVM: no explorer url configured → empty (history is optional, never fatal)', async () => {
+      jest.spyOn(axios, 'create').mockReturnValue({ interceptors: { response: { use: jest.fn() } } } as any);
+      const config = {
+        get: (k: string) => k === 'tatum.network' ? 'testnet'
+          : k === 'history.evm' ? { ETH: { url: '', apiKey: '' }, POLYGON: { url: '', apiKey: '' } }
+            : undefined,
+      } as ConfigService;
+      const p = new TatumProvider(config);
+      const POL: AssetDef = { code: 'POL', chain: 'POLYGON', type: 'native', decimals: 18 } as AssetDef;
+      expect(await p.getAddressTransactions('0xaddr', POL, 5)).toEqual([]);
+    });
+
+    it('explorer failure → [] with a warn — poller stays unattributed, never crashes', async () => {
+      jest.spyOn(axios, 'get').mockRejectedValue(new Error('ETIMEDOUT'));
+      const p = withHistory({});
+      expect(await p.getAddressTransactions(DEP, TRX_ASSET, 5)).toEqual([]);
+    });
+  });
 });

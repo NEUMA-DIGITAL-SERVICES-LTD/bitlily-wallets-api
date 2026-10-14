@@ -383,16 +383,17 @@ export class DepositPollerService {
         } catch { /* stays pending until derivable */ }
       }
 
-      const utxo = dep.chain === 'BTC' || dep.chain === 'LTC';
       const txid = hit?.txid ?? `poll:${dep.address}:${asset.code}:${observed}`;
       const req = this.requiredConfirmations(dep.chain);
-      // UTXO balance reads include the mempool: an unattributed delta
-      // (hit=null) may be a 0-CONF deposit. Crediting it instantly lets a
-      // payer double-spend after we've released funds — record 'pending'
-      // and re-attribute on subsequent polls until a real txid confirms.
-      // Account-model chains' balances are post-confirmation, so hit=null
-      // there is safe (and unavoidable — no address-history endpoint).
-      const confirmed = hit ? hit.confirmations >= req : !utxo;
+      // hit=null means the delta has no attributable on-chain tx yet —
+      // it records as 'pending' under a synthetic poll: txid and can NEVER
+      // credit (the ledger rejects poll:* deposit_confirmed entries).
+      // UTXO chains: the delta may be mempool-only (double-spend risk).
+      // Account chains: history may lag or be unconfigured. Either way
+      // the row waits for a real txid to adopt it (next poll, webhook,
+      // or manual credit) — an unexplained balance must never mint
+      // confirmed funds.
+      const confirmed = hit != null && hit.confirmations >= req;
       const reportConfs = hit?.confirmations ?? (confirmed ? req : 0);
       // When attributed, credit the tx's outputs to us — NOT the whole
       // delta. A two-deposit poll window (delta = a+b) must credit each tx
@@ -498,6 +499,7 @@ export class DepositPollerService {
               detectedVia: 'polling',
               observedBalance: observed,
               ...(covered ? { coveredByBaseline: true } : {}),
+              ...(hit ? {} : { needsAttribution: true }),
             },
           }),
         );

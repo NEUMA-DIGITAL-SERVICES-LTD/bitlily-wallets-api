@@ -11,6 +11,7 @@ import {
   detectionConfig,
   limitsConfig,
   reconcileConfig,
+  historyConfig,
   serviceConfig,
   sweepConfig,
   tatumConfig,
@@ -77,7 +78,7 @@ class HealthController {
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig, limitsConfig, reconcileConfig, treasuryConfig],
+      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig, limitsConfig, reconcileConfig, treasuryConfig, historyConfig],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

@@ -636,14 +636,18 @@ describe('DepositPollerService × webhook dedupe', () => {
     await service.poll();
 
     const wh = txRows.find((r) => r.txid === 'real-tx-webhook');
-    // The poll still records its own synthetic credit for the uncredited
-    // delta (account chain: confirms immediately) — but the webhook row's
-    // identity and amount are untouched.
+    // The webhook row's identity and amount are untouched by the poll.
     expect(wh!.amount).toBe('0.5');
     expect(wh!.txid).toBe('real-tx-webhook');
-    // Exactly one ledger credit total — for the poll row; the webhook
-    // row's credit path is superseded by the sweep, not here.
-    expect(ledger.postEntry).toHaveBeenCalledTimes(1);
+    // The unattributed delta records a PENDING synthetic row — never a
+    // credit. The ledger invariant (no deposit_confirmed on poll:*)
+    // backs this at the DB layer; the pending row waits for a real
+    // txid to adopt it (poll hit, webhook supersede, or manual credit).
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    const synthetic = txRows.find((r) => r.txid.startsWith('poll:'));
+    expect(synthetic).toBeDefined();
+    expect(synthetic!.status).toBe('pending');
+    expect((synthetic!.raw as any).needsAttribution).toBe(true);
   });
 
   it('hit amount exceeding the uncredited delta = covered — recorded, never re-credited', async () => {
