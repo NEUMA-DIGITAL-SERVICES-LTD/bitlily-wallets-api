@@ -5,9 +5,12 @@ only — no real value moves. The point of each step is stated so you can
 verify the claim yourself, not take our word for it.
 
 ```bash
-export BASE="https://28cf-2a09-bac5-4da3-26a0-00-3d9-14.ngrok-free.app"
-export KEY="eb08dcbedcc9407a7d92ed34af683e44a283137f"
-export WALLET="d55ef2ba-4aec-4d70-9b2c-a09419ad9880"
+# All three values are handed out per-demo, never committed. BASE is the
+# current staging/tunnel URL, KEY is a tenant X-API-Key, WALLET an
+# externalUserId under that tenant.
+export BASE="<staging-url>"
+export KEY="<tenant-api-key>"
+export WALLET="<external-user-id>"
 ```
 
 ## 1. Service is alive (no auth)
