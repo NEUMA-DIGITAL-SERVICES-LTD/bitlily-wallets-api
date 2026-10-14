@@ -137,4 +137,74 @@ export class WatchAddressDto {
   expiresInMinutes?: number;
 }
 
+/** One permanent deposit-address row in a wallet response. */
+export class DepositAddressViewDto {
+  @ApiProperty({ example: 'tb1qhy06eu2z3fwjd92j9v5wndx0y80qhpxnyxcfn8' })
+  address: string;
+
+  @ApiProperty({ example: 'BTC' })
+  chain: string;
+
+  @ApiProperty({
+    type: [String],
+    example: ['BTC'],
+    description: 'Asset codes that settle to this address on this chain.',
+  })
+  assets: string[];
+
+  @ApiPropertyOptional({ nullable: true, example: null })
+  expiresAt?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'bl-jw5pxfcb',
+    description:
+      'Shared-custody attribution memo — present on shared addresses ' +
+      '(SOL/USDC_SOL). Deposits MUST carry this value as a Solana Memo ' +
+      'program instruction or they cannot be attributed to this wallet.',
+  })
+  memo?: string;
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'true = deposits to `address` credit this wallet ONLY when the ' +
+      'transaction carries `memo`. Absent = unique address, no memo needed.',
+  })
+  memoRequired?: boolean;
+}
+
+export class BalanceViewDto {
+  @ApiProperty({ example: 'SOL' })
+  asset: string;
+
+  @ApiProperty({
+    example: '0.001500000000000000',
+    description: 'Confirmed balance as a decimal string (ledger truth).',
+  })
+  balance: string;
+}
+
+export class WalletViewDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ description: 'Your tenant slug (the X-API-Key owner)' })
+  appId: string;
+
+  @ApiProperty({ description: 'Your user id — the key you created the wallet with' })
+  externalUserId: string;
+
+  @ApiProperty()
+  createdAt: string;
+
+  @ApiProperty()
+  updatedAt: string;
+
+  @ApiPropertyOptional({ type: [DepositAddressViewDto] })
+  addresses?: DepositAddressViewDto[];
+
+  @ApiPropertyOptional({ type: [BalanceViewDto] })
+  balances?: BalanceViewDto[];
+}
+
 

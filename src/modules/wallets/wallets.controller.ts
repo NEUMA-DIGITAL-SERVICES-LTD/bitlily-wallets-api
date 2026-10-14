@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
-import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { WalletsService } from './wallets.service';
-import { CreateWalletDto, WalletQueryDto } from './wallets.dto';
+import { CreateWalletDto, WalletQueryDto, WalletViewDto } from './wallets.dto';
 import { RequireScope } from '../../common/api-key.guard';
 
 /**
@@ -34,13 +34,15 @@ export class WalletsController {
     summary:
       'Get-or-create a wallet for an app user (idempotent) and provision ' +
       'permanent deposit addresses. Omit `ensure` → addresses on every ' +
-      'HD-derivable chain at once (first call mints, later calls reuse). ' +
+      'supported chain at once (first call mints, later calls reuse). ' +
       'Pass `ensure: ["TRX"]` to provision just those chains. Response ' +
       '`addresses` is always the wallet\'s full permanent set, one entry ' +
       'per address — same-chain assets list together under `assets`. ' +
-      'Account-model chains (SOL: shared custody address, no per-user ' +
-      'attribution) are only provisioned via explicit ensure.',
+      'Shared-custody rows (SOL/USDC_SOL) carry `memo` + ' +
+      '`memoRequired: true` — deposits must include that memo or they ' +
+      'cannot be attributed.',
   })
+  @ApiOkResponse({ type: WalletViewDto })
   create(@Body() dto: CreateWalletDto, @Req() req: any) {
     return this.wallets.upsertWalletWithAddresses(dto.externalUserId, req.appId, dto.ensure);
   }
@@ -53,6 +55,7 @@ export class WalletsController {
       'balances,addresses). Transactions paginate via txLimit/txPage and ' +
       'filter via chain/asset/reference. Read-only — never creates.',
   })
+  @ApiOkResponse({ type: WalletViewDto })
   async get(
     @Param('externalUserId') externalUserId: string,
     @Query() q: WalletQueryDto,
