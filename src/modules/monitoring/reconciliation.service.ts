@@ -111,9 +111,17 @@ export class ReconciliationService {
   }
 
   private async reconcileAsset(asset: { code: string; chain: string; type: string; decimals: number }): Promise<void> {
+    // Per-wallet, floored at 0: enforceBalance=false clients can overdraw
+    // (fiat-funded sends) — a negative wallet is the APP's liability toward
+    // custody, not a user liability. Summing raw would shrink liabilities
+    // and let overdrafts mask a real divergence.
     const [{ liabilities }] = await this.em.query(
-      `SELECT COALESCE(SUM(CASE WHEN direction='credit' THEN amount::numeric ELSE -amount::numeric END), 0) AS liabilities
-       FROM ledger_entries WHERE asset = $1`,
+      `SELECT COALESCE(SUM(GREATEST(bal, 0)), 0) AS liabilities
+       FROM (
+         SELECT wallet_id,
+                SUM(CASE WHEN direction='credit' THEN amount::numeric ELSE -amount::numeric END) AS bal
+         FROM ledger_entries WHERE asset = $1 GROUP BY wallet_id
+       ) w`,
       [asset.code],
     );
     const [{ inflight }] = await this.em.query(

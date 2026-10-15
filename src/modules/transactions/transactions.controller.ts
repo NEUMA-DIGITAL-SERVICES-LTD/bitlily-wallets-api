@@ -17,10 +17,13 @@ export class WithdrawalsController {
       'Withdraw funds to an external address. `reference` (your payout/' +
       'order id) must be unique per send in your app — a repeat is ' +
       'rejected 409 with the existing transaction\'s id; fetch it via ' +
-      'GET /transactions/{id} or the wallet\'s transactions view.',
+      'GET /transactions/{id} or the wallet\'s transactions view. The ' +
+      'ledger-balance check applies unless your client has ' +
+      'enforceBalance=false (your backend then owns solvency checks — ' +
+      'e.g. fiat-funded withdrawals).',
   })
   send(@Body() dto: SendTransactionDto, @Req() req: any) {
-    return this.txs.send(dto, req.appId);
+    return this.txs.send(dto, req.appId, req.enforceBalance !== false);
   }
 }
 

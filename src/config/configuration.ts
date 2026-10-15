@@ -11,6 +11,13 @@ export interface ApiClientConfig {
   webhookSecret?: string;
   /** CIDRs/IPs this key may be used from. Absent = unrestricted. */
   allowedIps?: string[];
+  /**
+   * false = the client's backend owns balance checks (e.g. fiat-funded
+   * crypto withdrawals where no on-chain deposit precedes the send).
+   * The ledger still posts the debit — wallet balances may go negative
+   * and represent what the app's ledger owes custody. Default true.
+   */
+  enforceBalance?: boolean;
 }
 
 export const serviceConfig = registerAs('service', () => {

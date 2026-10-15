@@ -53,6 +53,15 @@ export class ApiClient {
   @Column({ name: 'allowed_ips', type: 'jsonb', nullable: true })
   allowedIps: string[] | null;
 
+  /**
+   * true (default) = withdrawals must be covered by the wallet's ledger
+   * balance. false = the client's backend is the balance authority (fiat
+   * on-ramps etc.) — debits still post, so balances may go negative and
+   * then represent the app's liability toward custody, not a user's.
+   */
+  @Column({ name: 'enforce_balance', default: true })
+  enforceBalance: boolean;
+
   @Column({ default: true })
   active: boolean;
 

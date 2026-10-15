@@ -57,6 +57,7 @@ export class ApiKeyGuard implements CanActivate {
     }
     req.appId = resolved.appId;
     req.clientScopes = resolved.scopes;
+    req.enforceBalance = resolved.enforceBalance;
 
     const required = this.reflector.getAllAndOverride<string>(REQUIRED_SCOPE, [
       ctx.getHandler(),

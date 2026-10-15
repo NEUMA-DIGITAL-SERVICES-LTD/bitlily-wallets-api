@@ -160,7 +160,11 @@ export class TransactionsService {
    * reconciled (tx row exists with status=pending and no txid). Broadcasting
    * first and recording after is how funds get double-sent.
    */
-  async send(dto: SendTransactionDto, appId: string): Promise<Transaction> {
+  async send(
+    dto: SendTransactionDto,
+    appId: string,
+    enforceBalance = true,
+  ): Promise<Transaction> {
     const asset = getAsset(dto.asset);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${dto.asset}`);
 
@@ -240,11 +244,17 @@ export class TransactionsService {
           where: { id: account.wallet.id },
           lock: { mode: 'pessimistic_write' },
         });
-        const balance = await this.ledger.getBalance(wallet.id, asset.code);
-        if (parseFloat(balance) < amount) {
-          throw new BadRequestException(
-            `Insufficient ${asset.code} balance: have ${balance}, need ${dto.amount}`,
-          );
+        // enforceBalance=false: the client's backend owns solvency checks
+        // (fiat on-ramps, credits granted off-chain). The debit still
+        // posts — a negative wallet balance then means the app's ledger
+        // owes custody, and the reconciler floors it at 0.
+        if (enforceBalance) {
+          const balance = await this.ledger.getBalance(wallet.id, asset.code);
+          if (parseFloat(balance) < amount) {
+            throw new BadRequestException(
+              `Insufficient ${asset.code} balance: have ${balance}, need ${dto.amount}`,
+            );
+          }
         }
         const t = await em.save(
           em.create(Transaction, {

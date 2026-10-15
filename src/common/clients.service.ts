@@ -12,6 +12,11 @@ export interface ResolvedClient {
   scopes: string[];
   /** CIDRs this key may be used from. Undefined/empty = unrestricted. */
   allowedIps?: string[];
+  /**
+   * false = withdrawals skip the ledger-balance gate (client backend is
+   * the balance authority — fiat on-ramps). Debits still post.
+   */
+  enforceBalance: boolean;
 }
 
 export interface WebhookRoute {
@@ -45,7 +50,12 @@ export class ClientsService {
 
     for (const c of this.config.get<ApiClientConfig[]>('service.clients') ?? []) {
       if (eq(c.apiKey)) {
-        return { appId: c.slug, scopes: ['wallet'], allowedIps: c.allowedIps };
+        return {
+          appId: c.slug,
+          scopes: ['wallet'],
+          allowedIps: c.allowedIps,
+          enforceBalance: c.enforceBalance !== false,
+        };
       }
     }
     for (const c of await this.dbClients()) {
@@ -54,11 +64,14 @@ export class ClientsService {
           appId: c.slug,
           scopes: c.scopes?.length ? c.scopes : ['wallet'],
           allowedIps: c.allowedIps ?? undefined,
+          enforceBalance: c.enforceBalance !== false,
         };
       }
     }
     for (const k of this.config.get<string[]>('service.apiKeys') ?? []) {
-      if (eq(k)) return { appId: 'default', scopes: ['wallet'] };
+      if (eq(k)) {
+        return { appId: 'default', scopes: ['wallet'], enforceBalance: true };
+      }
     }
     return null;
   }
@@ -84,6 +97,7 @@ export class ClientsService {
       scopes: ['wallet'],
       webhookConfigured: !!c.webhookUrl,
       allowedIps: c.allowedIps ?? null,
+      enforceBalance: c.enforceBalance !== false,
       active: true,
     }));
     const db = (await this.dbClients(true)).map((c) => ({
@@ -94,6 +108,7 @@ export class ClientsService {
       scopes: c.scopes,
       webhookConfigured: !!c.webhookUrl,
       allowedIps: c.allowedIps,
+      enforceBalance: c.enforceBalance !== false,
       active: c.active,
     }));
     const envSlugs = new Set(env.map((e) => e.slug));
@@ -106,6 +121,7 @@ export class ClientsService {
     webhookUrl?: string;
     scopes?: string[];
     allowedIps?: string[];
+    enforceBalance?: boolean;
   }): Promise<ApiClient> {
     this.assertValidIps(input.allowedIps);
     const apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -127,6 +143,9 @@ export class ClientsService {
     if (patch.allowedIps !== undefined) {
       this.assertValidIps(patch.allowedIps);
       row.allowedIps = patch.allowedIps;
+    }
+    if (patch.enforceBalance !== undefined) {
+      row.enforceBalance = patch.enforceBalance;
     }
     if (rotate) {
       row.apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;

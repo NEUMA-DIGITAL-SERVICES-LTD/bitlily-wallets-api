@@ -68,6 +68,29 @@ describe('TransactionsService.send', () => {
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 
+  it('skips the balance gate for enforceBalance=false clients — fiat-funded sends still debit', async () => {
+    ledger.getBalance.mockResolvedValue('0.001'); // less than the 0.01 send
+    provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
+
+    const tx = await service.send(dto, 'fiat-app', false);
+
+    // The balance is never even read — the app's backend is the
+    // authority. The debit still posts: the ledger records what the
+    // app's books owe custody.
+    expect(ledger.getBalance).not.toHaveBeenCalled();
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, wallet, expect.anything(), 'withdrawal', '0.01', 'debit',
+    );
+    expect(provider.sendTransaction).toHaveBeenCalled();
+    expect(tx.txid).toBe('0xreal');
+  });
+
+  it('still enforces the balance gate by default when the flag is omitted', async () => {
+    ledger.getBalance.mockResolvedValue('0.005');
+    await expect(service.send(dto, 'default')).rejects.toThrow(/Insufficient/);
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
   it('debits first, then broadcasts, then records the real txid', async () => {
     provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
 

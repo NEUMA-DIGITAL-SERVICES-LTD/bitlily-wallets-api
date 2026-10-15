@@ -50,6 +50,17 @@ class CreateClientDto {
   @IsString({ each: true })
   @IsOptional()
   allowedIps?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'false = this client\'s backend owns balance checks (fiat-funded ' +
+      'withdrawals, off-chain credits). Debits still post; negative ' +
+      'wallet balances become the app\'s liability toward custody. ' +
+      'Default true — the service gates withdrawals on ledger balance.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  enforceBalance?: boolean;
 }
 
 class UpdateClientDto {
@@ -83,6 +94,15 @@ class UpdateClientDto {
   @IsBoolean()
   @IsOptional()
   active?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'false = client backend owns balance checks (fiat on-ramps). ' +
+      'Omitted = leave unchanged.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  enforceBalance?: boolean;
 
   @ApiPropertyOptional({
     description: 'true regenerates apiKey + webhookSecret — return them once, old key dies',
@@ -290,6 +310,7 @@ export class AdminController {
       webhookSecret: row.webhookSecret,
       scopes: row.scopes,
       allowedIps: row.allowedIps,
+      enforceBalance: row.enforceBalance,
     };
   }
 
@@ -309,6 +330,7 @@ export class AdminController {
       webhookSecret: row.webhookSecret,
       scopes: row.scopes,
       allowedIps: row.allowedIps,
+      enforceBalance: row.enforceBalance,
       active: row.active,
     };
   }
