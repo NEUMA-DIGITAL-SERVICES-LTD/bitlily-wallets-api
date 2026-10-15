@@ -109,10 +109,16 @@ export class EstimateFeeQueryDto {
   @IsNotEmpty()
   asset: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description:
+      'Destination address — optional. With it, the estimate prices the ' +
+      'real send (UTXO output count, destination-aware gas). Without it, ' +
+      'a typical-transfer estimate is returned. Malformed values are ' +
+      'rejected 400; use GET /addresses/validate to pre-check.',
+  })
   @IsString()
-  @IsNotEmpty()
-  toAddress: string;
+  @IsOptional()
+  toAddress?: string;
 
   @ApiProperty()
   @Matches(POSITIVE_DECIMAL, { message: 'amount must be a positive decimal' })

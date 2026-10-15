@@ -17,7 +17,7 @@ import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
-import { ASSET_REGISTRY, AssetDef, getAsset } from '../../config/assets';
+import { ASSET_REGISTRY, AssetDef, Chain, getAsset } from '../../config/assets';
 import {
   BLOCKCHAIN_PROVIDER,
   BlockchainProvider,
@@ -525,10 +525,43 @@ export class TransactionsService {
     return { data, total, page, limit };
   }
 
-  async estimateFee(assetCode: string, toAddress: string, amount: string) {
+  /**
+   * Format check for client UIs — the same pre-broadcast gate POST
+   * /withdrawals applies (charset/length/prefix, not checksum). 200 with
+   * {valid:false} is the answer, not an error; only an unknown chain or
+   * asset 400s. `asset` resolves its chain (USDT_TRC20 → TRON).
+   */
+  validateAddress(
+    address: string,
+    chainOrAsset: { asset?: string; chain?: string },
+  ): { address: string; chain: string; valid: boolean } {
+    let chain: string | undefined;
+    if (chainOrAsset.asset) {
+      const asset = getAsset(chainOrAsset.asset);
+      if (!asset) throw new BadRequestException(`Unsupported asset: ${chainOrAsset.asset}`);
+      chain = asset.chain;
+    } else if (chainOrAsset.chain) {
+      chain = chainOrAsset.chain.toUpperCase();
+      const valid = new Set<string>(ASSET_REGISTRY.map((a) => a.chain));
+      if (!valid.has(chain)) {
+        throw new BadRequestException(
+          `Unsupported chain: ${chainOrAsset.chain} (supported: ${[...valid].join(', ')})`,
+        );
+      }
+    } else {
+      throw new BadRequestException('Pass either asset or chain');
+    }
+    return {
+      address,
+      chain,
+      valid: !!address && isPlausibleAddress(chain as Chain, address),
+    };
+  }
+
+  async estimateFee(assetCode: string, toAddress: string | undefined, amount: string) {
     const asset = getAsset(assetCode);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
-    if (!isPlausibleAddress(asset.chain, toAddress)) {
+    if (toAddress && !isPlausibleAddress(asset.chain, toAddress)) {
       throw new BadRequestException(
         `${toAddress} is not a valid ${asset.chain} address format`,
       );

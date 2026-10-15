@@ -576,13 +576,13 @@ export class TatumProvider implements BlockchainProvider {
    */
   async estimateFee(
     asset: AssetDef,
-    toAddress: string,
+    toAddress: string | undefined,
     amount: string,
     fromAddress?: string,
   ): Promise<FeeEstimate> {
     const path = CHAIN_PATH[asset.chain];
     if (asset.chain === 'BTC' || asset.chain === 'LTC') {
-      if (fromAddress) {
+      if (fromAddress && toAddress) {
         const { data } = await this.http.post('/v3/blockchain/estimate', {
           chain: asset.chain,
           type: 'TRANSFER',
@@ -601,7 +601,9 @@ export class TatumProvider implements BlockchainProvider {
     if (asset.chain === 'ETH' || asset.chain === 'POLYGON') {
       const { data } = await this.http.post(`/v3/${path}/gas`, {
         from: fromAddress ?? '0x000000000000000000000000000000000000dEaD',
-        to: toAddress,
+        // No destination → estimate a typical EOA transfer (gasLimit
+        // 21000); contract destinations price higher when provided.
+        to: toAddress ?? '0x000000000000000000000000000000000000dEaD',
         amount,
       });
       const gasPrice = BigInt(String(data?.gasPrice ?? '0'));

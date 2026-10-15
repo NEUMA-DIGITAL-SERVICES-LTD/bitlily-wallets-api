@@ -396,6 +396,86 @@ describe('TransactionsService.listForApp', () => {
 });
 
 /**
+ * Client-UI format check: same pre-broadcast gate as POST /withdrawals,
+ * exposed so apps can validate on input instead of on submit. A malformed
+ * address is the ANSWER (valid:false), never an error — only unknown
+ * chains/assets 400.
+ */
+describe('TransactionsService.validateAddress', () => {
+  let service: TransactionsService;
+
+  beforeEach(() => {
+    service = new TransactionsService(
+      {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+      { get: jest.fn().mockReturnValue({}) } as any,
+      {} as any,
+    );
+  });
+
+  it('validates by asset code, resolving its chain (USDT_TRON → TRON)', async () => {
+    const res = service.validateAddress(
+      'TQpeU63gg1SZgDnsVT47fuWJkBQESJynYZ',
+      { asset: 'USDT_TRON' },
+    );
+    expect(res).toEqual({
+      address: 'TQpeU63gg1SZgDnsVT47fuWJkBQESJynYZ',
+      chain: 'TRON',
+      valid: true,
+    });
+  });
+
+  it('validates by raw chain too', () => {
+    const res = service.validateAddress('0x' + 'ab'.repeat(20), { chain: 'eth' });
+    expect(res).toEqual({ address: '0x' + 'ab'.repeat(20), chain: 'ETH', valid: true });
+  });
+
+  it('returns valid:false for malformed input — the answer, not an error', () => {
+    expect(service.validateAddress('not-an-address', { chain: 'BTC' }).valid).toBe(false);
+    // Wrong-chain paste is a false, same as the send gate would reject.
+    expect(
+      service.validateAddress('mvw7cGjmWaSBFeQmGebZeVBVYx7h9pU2k', { asset: 'ETH' }).valid,
+    ).toBe(false);
+  });
+
+  it('400s on unknown asset, unknown chain, or neither param', () => {
+    expect(() => service.validateAddress('x', { asset: 'NOTACOIN' }))
+      .toThrow(/Unsupported asset/);
+    expect(() => service.validateAddress('x', { chain: 'NOTACHAIN' }))
+      .toThrow(/Unsupported chain/);
+    expect(() => service.validateAddress('x', {}))
+      .toThrow(/either asset or chain/);
+  });
+});
+
+describe('TransactionsService.estimateFee', () => {
+  let service: TransactionsService;
+  let provider: any;
+
+  beforeEach(() => {
+    provider = { estimateFee: jest.fn().mockResolvedValue({ asset: 'ETH', fee: '0.001' }) };
+    service = new TransactionsService(
+      {} as any, {} as any, {} as any, provider, {} as any, {} as any,
+      { get: jest.fn().mockReturnValue({}) } as any,
+      { getRepository: jest.fn().mockReturnValue({ findOne: jest.fn().mockResolvedValue(null) }) } as any,
+    );
+  });
+
+  it('forwards an omitted destination — providers fall back to a typical-transfer quote', async () => {
+    const res = await service.estimateFee('ETH', undefined, '0.01');
+    expect(provider.estimateFee).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'ETH' }), undefined, '0.01', undefined,
+    );
+    expect(res.fee).toBe('0.001');
+  });
+
+  it('still rejects a malformed destination when one IS provided', async () => {
+    await expect(service.estimateFee('ETH', 'garbage', '0.01'))
+      .rejects.toThrow(/not a valid ETH address/);
+    expect(provider.estimateFee).not.toHaveBeenCalled();
+  });
+});
+
+/**
  * OPS manual credit for unattributed shared-custody deposits (SOL
  * missing/wrong memo): attribution must be explicit, idempotent (an
  * already-attributed deposit can never double-credit), and auditable.

@@ -54,8 +54,30 @@ export class TransactionsController {
   }
 
   @Get('fees/estimate')
-  @ApiOperation({ summary: 'Estimate network fee for a send' })
+  @ApiOperation({
+    summary:
+      'Estimate network fee for a send. `toAddress` is optional — pass it ' +
+      'for a destination-priced quote, omit it for a typical-transfer ' +
+      'estimate.',
+  })
   estimateFee(@Query() q: EstimateFeeQueryDto) {
     return this.txs.estimateFee(q.asset, q.toAddress, q.amount);
+  }
+
+  @Get('addresses/validate')
+  @ApiOperation({
+    summary:
+      'Check an address format before submitting a send — same gate POST ' +
+      '/withdrawals applies. Pass `asset` (USDT_TRON → TRON) or `chain`; ' +
+      'returns {chain, address, valid}. Charset/length/prefix only — ' +
+      'checksum-valid-but-wrong destinations are the sender\'s ' +
+      'responsibility.',
+  })
+  validateAddress(
+    @Query('address') address: string,
+    @Query('asset') asset?: string,
+    @Query('chain') chain?: string,
+  ) {
+    return this.txs.validateAddress(address, { asset, chain });
   }
 }

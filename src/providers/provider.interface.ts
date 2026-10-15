@@ -115,11 +115,14 @@ export interface BlockchainProvider {
   /**
    * Network fee for a send. UTXO estimation needs the source address to
    * count inputs — callers must pass the spending address (deposit
-   * address for sweeps, treasury for withdrawals).
+   * address for sweeps, treasury for withdrawals). toAddress may be
+   * omitted for a typical-transfer estimate (constant-fee chains) —
+   * UTXO/EVM paths then fall back to rate × typical size rather than a
+   * destination-priced quote.
    */
   estimateFee(
     asset: AssetDef,
-    toAddress: string,
+    toAddress: string | undefined,
     amount: string,
     fromAddress?: string,
   ): Promise<FeeEstimate>;
