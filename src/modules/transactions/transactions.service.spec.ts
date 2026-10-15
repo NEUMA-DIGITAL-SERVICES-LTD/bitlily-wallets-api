@@ -108,6 +108,59 @@ describe('TransactionsService.send', () => {
     expect(txs.update).not.toHaveBeenCalled(); // never a real txid
   });
 
+  it('503s + reverses when treasury cannot fund the send — no KMS call at all', async () => {
+    // Custody holds 0.02 ETH; the send needs 0.01 + ~0.00021 gas. Without
+    // the pre-check this debits, fails at broadcast, reverses — a confusing
+    // 502. The gate must catch it first and alert ops immediately.
+    const custRepo = { findOne: jest.fn().mockResolvedValue({ treasuryAddress: '0xtreasury' }) };
+    dataSource.getRepository.mockReturnValue(custRepo);
+    notifier.notifyEvent = jest.fn();
+    provider.getAddressBalance = jest.fn().mockResolvedValue('0.005');
+    provider.estimateFee = jest.fn().mockResolvedValue({ fee: '0.00021' });
+
+    await expect(service.send(dto, 'default')).rejects.toThrow(/Treasury underfunded/);
+
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+    expect(notifier.notifyEvent).toHaveBeenCalledWith(
+      'treasury.insufficient',
+      expect.objectContaining({ chain: 'ETH', balance: '0.005' }),
+    );
+    // The committed debit still reverses — the user's balance is untouched.
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, wallet, expect.anything(), 'withdrawal_reversal', '0.01', 'credit',
+    );
+  });
+
+  it('broadcasts when treasury covers amount + native fee', async () => {
+    dataSource.getRepository.mockReturnValue({
+      findOne: jest.fn().mockResolvedValue({ treasuryAddress: '0xtreasury' }),
+    });
+    provider.getAddressBalance = jest.fn().mockResolvedValue('0.5');
+    provider.estimateFee = jest.fn().mockResolvedValue({ fee: '0.00021' });
+    provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
+
+    const tx = await service.send(dto, 'default');
+
+    expect(provider.getAddressBalance).toHaveBeenCalledWith('0xtreasury', expect.anything());
+    expect(provider.sendTransaction).toHaveBeenCalled();
+    expect(tx.txid).toBe('0xreal');
+  });
+
+  it('fails open when the treasury balance is unreadable — broadcast still decides', async () => {
+    dataSource.getRepository.mockReturnValue({
+      findOne: jest.fn().mockResolvedValue({ treasuryAddress: '0xtreasury' }),
+    });
+    provider.getAddressBalance = jest.fn().mockRejectedValue(new Error('RPC down'));
+    provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
+
+    const tx = await service.send(dto, 'default');
+
+    // A provider outage must not freeze withdrawals harder than it already
+    // does — the broadcast path + reversal remains the safety net.
+    expect(provider.sendTransaction).toHaveBeenCalled();
+    expect(tx.txid).toBe('0xreal');
+  });
+
   it('rejects non-positive amounts before any ledger movement', async () => {
     for (const amount of ['0', '-5', 'abc', '']) {
       await expect(service.send({ ...dto, amount }, 'default')).rejects.toThrow(

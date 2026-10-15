@@ -2,10 +2,12 @@ import {
   BadGatewayException,
   BadRequestException,
   ConflictException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -306,6 +308,7 @@ export class TransactionsService {
       // before custody existed; those must still withdraw.
       const custody = await this.dataSource.getRepository(CustodyAccount)
         .findOne({ where: { chain: asset.chain } });
+      await this.assertTreasuryCoverage(custody, asset, tx);
       const result = await this.provider.sendTransaction({
         asset,
         fromAccountId: account.id,
@@ -343,9 +346,62 @@ export class TransactionsService {
           em, account.wallet, tx, 'withdrawal_reversal', tx.amount, 'credit',
         );
       });
-      if (e instanceof BadGatewayException) throw e;
+      if (e instanceof HttpException) throw e;
       throw new BadGatewayException(`Broadcast failed: ${errMsg(e)}`);
     }
+  }
+
+  /**
+   * Pre-flight solvency gate: a withdrawal the ledger covers but the chain
+   * treasury cannot only ever ends one way — debit, broadcast fail,
+   * reverse — surfacing as a confusing 502 after the fact. Reading the
+   * on-chain balance first fails fast with an honest 503 and alerts ops
+   * now rather than at the next hourly reconciliation. Native sends also
+   * need headroom for the network fee; tokens gate on the token balance
+   * alone (gas shortfall is the gas-floor alert's job).
+   *
+   * Fails OPEN on an unreadable balance: broadcast failure already
+   * reverses the debit cleanly, and a provider outage must not freeze
+   * withdrawals any harder than it already does.
+   */
+  private async assertTreasuryCoverage(
+    custody: CustodyAccount | null,
+    asset: AssetDef,
+    tx: Transaction,
+  ): Promise<void> {
+    const treasury = custody?.treasuryAddress ?? custody?.baseAddress;
+    if (!treasury) return;
+    let onchain: number;
+    let needed: number;
+    try {
+      onchain = parseFloat(await this.provider.getAddressBalance(treasury, asset));
+      needed = parseFloat(tx.amount);
+      if (asset.type === 'native') {
+        try {
+          const est = await this.provider.estimateFee(asset, tx.address, tx.amount, treasury);
+          needed += parseFloat(est.fee);
+        } catch { /* estimator unavailable — gate on amount alone */ }
+      }
+    } catch (e) {
+      this.logger.warn(
+        `Treasury pre-check unreadable for ${asset.code} (${errMsg(e)}) — ` +
+        `proceeding; a failed broadcast still reverses cleanly`,
+      );
+      return;
+    }
+    if (onchain >= needed) return;
+    await this.notifier.notifyEvent('treasury.insufficient', {
+      chain: asset.chain,
+      asset: asset.code,
+      treasury,
+      balance: String(onchain),
+      needed: String(needed),
+      transactionId: tx.id,
+    });
+    throw new ServiceUnavailableException(
+      `Treasury underfunded on ${asset.chain}: holds ${onchain} ${asset.code}, ` +
+      `withdrawal needs ${needed} — refill custody, then retry`,
+    );
   }
 
   /**
