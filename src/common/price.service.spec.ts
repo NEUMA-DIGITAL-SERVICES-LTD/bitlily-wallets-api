@@ -4,21 +4,27 @@ import { PriceService } from './price.service';
 /**
  * USD enrichment on webhook payloads: stablecoins peg locally (no call,
  * 'peg' source keeps the assumption auditable), volatile assets hit
- * CoinGecko with a 60s cache, and any failure degrades to a null quote —
- * pricing must never drop or delay a money-movement event.
+ * Tatum's rate endpoint first (same vendor, same key) with CoinGecko as
+ * fallback, and any failure degrades to a null quote — pricing must
+ * never drop or delay a money-movement event.
  */
 describe('PriceService', () => {
   let service: PriceService;
   let get: jest.SpyInstance;
 
+  const conf = (over: Record<string, string | boolean> = {}) => ({
+    get: jest.fn((key: string) =>
+      over[key] ?? {
+        'pricing.enabled': true,
+        'pricing.apiUrl': 'https://api.coingecko.com/api/v3',
+        'pricing.apiKey': '',
+        'tatum.apiKey': 't-test',
+        'tatum.baseUrl': 'https://api.tatum.io',
+      }[key] ?? ''),
+  });
+
   beforeEach(() => {
-    service = new PriceService({
-      get: jest.fn((key: string) => {
-        if (key === 'pricing.enabled') return true;
-        if (key === 'pricing.apiUrl') return 'https://api.coingecko.com/api/v3';
-        return '';
-      }),
-    } as any);
+    service = new PriceService(conf() as any);
     get = jest.spyOn(axios, 'get');
   });
 
@@ -35,37 +41,49 @@ describe('PriceService', () => {
     expect(get).not.toHaveBeenCalled();
   });
 
-  it('prices volatile assets via CoinGecko and multiplies the amount', async () => {
-    get.mockResolvedValue({ data: { tron: { usd: 0.35 } } });
+  it('prices natives via Tatum rates first', async () => {
+    get.mockResolvedValue({ data: { value: '0.33458000' } });
     const q = await service.quote('TRX', '2000');
     expect(q).toMatchObject({
-      usdPrice: '0.35',
-      usdValue: '700.000000',
-      priceSource: 'coingecko',
+      usdPrice: '0.33458',
+      usdValue: '669.160000',
+      priceSource: 'tatum',
     });
+    expect(get).toHaveBeenCalledWith(
+      'https://api.tatum.io/v3/tatum/rate/TRX',
+      expect.objectContaining({ params: { basePair: 'USD' } }),
+    );
   });
 
-  it('caches for 60s — bursts of deposits cost one API call', async () => {
-    get.mockResolvedValue({ data: { bitcoin: { usd: 100000 } } });
+  it('falls back to CoinGecko when Tatum misses (e.g. unlisted token)', async () => {
+    get
+      .mockRejectedValueOnce(Object.assign(new Error('403'), { response: { status: 403 } }))
+      .mockResolvedValueOnce({ data: { tron: { usd: 0.35 } } });
+    const q = await service.quote('TRX', '2000');
+    expect(q).toMatchObject({ usdPrice: '0.35', usdValue: '700.000000', priceSource: 'coingecko' });
+  });
+
+  it('caches for 60s — bursts of deposits cost one upstream call', async () => {
+    get.mockResolvedValue({ data: { value: '100000' } });
     await service.quote('BTC', '1');
-    await service.quote('BTC', '2');
-    expect(get).toHaveBeenCalledTimes(1);
     const second = await service.quote('BTC', '2');
+    expect(get).toHaveBeenCalledTimes(1);
     expect(second?.usdValue).toBe('200000.000000');
   });
 
-  it('degrades to null on API failure — pricing never blocks the event', async () => {
-    get.mockRejectedValue(new Error('rate limited'));
+  it('degrades to null when every source fails — pricing never blocks the event', async () => {
+    get.mockRejectedValue(new Error('down'));
     await expect(service.quote('ETH', '0.5')).resolves.toBeNull();
   });
 
   it('returns null for unmapped assets and when disabled', async () => {
-    expect(await service.quote('DOGE', '10')).toBeNull();
+    // Unknown asset: Tatum is still tried (it may list it), no CoinGecko
+    // id exists — one upstream attempt, then null.
+    get.mockRejectedValue(new Error('403'));
+    expect(await service.quote('NOTACOIN', '10')).toBeNull();
+    expect(get).toHaveBeenCalledTimes(1);
 
-    const off = new PriceService({
-      get: jest.fn((k: string) => (k === 'pricing.enabled' ? false : '')),
-    } as any);
+    const off = new PriceService(conf({ 'pricing.enabled': false }) as any);
     expect(await off.quote('BTC', '1')).toBeNull();
-    expect(get).not.toHaveBeenCalled();
   });
 });

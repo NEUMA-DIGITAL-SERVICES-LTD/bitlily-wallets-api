@@ -9,16 +9,16 @@ export interface UsdQuote {
   usdPrice: string;
   /** amount × usdPrice, 6 decimals — informational, never ledger math. */
   usdValue: string;
-  /** 'coingecko' | 'peg' — 'peg' = stablecoin assumed 1.00 USD. */
+  /** 'tatum' | 'coingecko' | 'peg' — 'peg' = stablecoin assumed 1.00 USD. */
   priceSource: string;
   /** ISO timestamp the price was observed at. */
   pricedAt: string;
 }
 
 /**
- * CoinGecko asset ids for our native codes. Tokens that are not pegged
- * stablecoins have no entry → null quote (the field set is still emitted,
- * just null).
+ * CoinGecko asset ids — the fallback source when Tatum's rate endpoint
+ * misses or fails. Tokens that are not pegged stablecoins have no entry
+ * in either source → null quote (fields still emit, just null).
  */
 const COINGECKO_IDS: Record<string, string> = {
   BTC: 'bitcoin',
@@ -33,10 +33,12 @@ const CACHE_MS = 60_000;
 
 /**
  * USD pricing for outbound webhook payloads — best-effort enrichment,
- * never a hard dependency. A price failure degrades to null fields, never
- * a dropped or delayed event. Stablecoins peg at 1.00 without a call —
- * 'peg' in priceSource makes that assumption auditable rather than
- * silently looking like a market quote.
+ * never a hard dependency. Sources in order: Tatum rate endpoint (same
+ * vendor, same key — verified live: BTC/ETH/LTC/SOL/TRX/POL all answer),
+ * then CoinGecko free tier. A total failure degrades to null fields,
+ * never a dropped or delayed event. Stablecoins peg at 1.00 without a
+ * call — 'peg' in priceSource makes that assumption auditable rather
+ * than silently looking like a market quote.
  *
  * Note: prices are always mainnet-market prices — on testnet the figure
  * is illustrative (useful for client UI plumbing, meaningless as value).
@@ -44,7 +46,7 @@ const CACHE_MS = 60_000;
 @Injectable()
 export class PriceService {
   private readonly logger = new Logger(PriceService.name);
-  private cache = new Map<string, { usd: number; at: number }>();
+  private cache = new Map<string, { usd: number; source: string; at: number }>();
 
   constructor(private readonly config: ConfigService) {}
 
@@ -56,19 +58,46 @@ export class PriceService {
     if (assetCode.startsWith('USDT') || assetCode.startsWith('USDC')) {
       return this.build(amount, 1, 'peg', pricedAt);
     }
-    const cgId = COINGECKO_IDS[assetCode];
-    if (!cgId) return null;
-
     const hit = this.cache.get(assetCode);
-    const usd = hit && Date.now() - hit.at < CACHE_MS
-      ? hit.usd
-      : await this.fetch(cgId, assetCode);
-    if (usd == null) return null;
-    this.cache.set(assetCode, { usd, at: Date.now() });
-    return this.build(amount, usd, 'coingecko', pricedAt);
+    if (hit && Date.now() - hit.at < CACHE_MS) {
+      return this.build(amount, hit.usd, hit.source, pricedAt);
+    }
+    const q = await this.fetch(assetCode);
+    if (q == null) return null;
+    this.cache.set(assetCode, { usd: q.usd, source: q.source, at: Date.now() });
+    return this.build(amount, q.usd, q.source, pricedAt);
   }
 
-  private async fetch(cgId: string, assetCode: string): Promise<number | null> {
+  private async fetch(assetCode: string): Promise<{ usd: number; source: string } | null> {
+    const tatum = await this.fetchTatum(assetCode);
+    if (tatum != null) return { usd: tatum, source: 'tatum' };
+    const cgId = COINGECKO_IDS[assetCode];
+    if (!cgId) return null;
+    const cg = await this.fetchCoinGecko(cgId, assetCode);
+    return cg == null ? null : { usd: cg, source: 'coingecko' };
+  }
+
+  private async fetchTatum(assetCode: string): Promise<number | null> {
+    const apiKey = this.config.get<string>('tatum.apiKey');
+    if (!apiKey) return null;
+    try {
+      const { data } = await axios.get(
+        `${this.config.get<string>('tatum.baseUrl')}/v3/tatum/rate/${assetCode}`,
+        {
+          params: { basePair: 'USD' },
+          headers: { 'x-api-key': apiKey },
+          timeout: 8000,
+        },
+      );
+      const usd = parseFloat(String(data?.value ?? ''));
+      return Number.isFinite(usd) && usd > 0 ? usd : null;
+    } catch {
+      // Tokens 404/403 here — CoinGecko fallback covers them if mapped.
+      return null;
+    }
+  }
+
+  private async fetchCoinGecko(cgId: string, assetCode: string): Promise<number | null> {
     try {
       const key = this.config.get<string>('pricing.apiKey');
       const { data } = await axios.get(
