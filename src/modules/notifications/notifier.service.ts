@@ -9,6 +9,7 @@ import { Transaction } from '../../database/entities/transaction.entity';
 import { OutboundEvent } from '../../database/entities/outbound-event.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { ClientsService, WebhookRoute } from '../../common/clients.service';
+import { PriceService, UsdQuote } from '../../common/price.service';
 import { errMsg } from '../../common/errors';
 
 /** ~4h of exponential retries (1,2,4,8…128 min) before dead-lettering. */
@@ -40,10 +41,15 @@ export class NotifierService {
     @InjectRepository(Wallet)
     private readonly wallets: Repository<Wallet>,
     private readonly clients: ClientsService,
+    private readonly prices: PriceService,
   ) {}
 
   /** Persist the event, then attempt immediate delivery. */
   async notify(event: string, tx: Transaction): Promise<void> {
+    // USD enrichment is stamped ONCE at enqueue — retries replay the same
+    // priced body, so pricedAt is the event's price time, not a retry's.
+    // A null quote degrades to null fields; pricing never blocks delivery.
+    const quote: UsdQuote | null = await this.prices.quote(tx.asset, tx.amount);
     const body = {
       event,
       data: {
@@ -55,6 +61,10 @@ export class NotifierService {
         txid: tx.txid,
         address: tx.address,
         amount: tx.amount,
+        usdPrice: quote?.usdPrice ?? null,
+        usdValue: quote?.usdValue ?? null,
+        priceSource: quote?.priceSource ?? null,
+        pricedAt: quote?.pricedAt ?? null,
         status: tx.status,
         confirmations: tx.confirmations,
         reference: tx.reference,

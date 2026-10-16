@@ -8,6 +8,7 @@ import { ApiKeyGuard, Public } from './common/api-key.guard';
 import { ClientsModule } from './common/clients.module';
 import {
   confirmationsConfig,
+  pricingConfig,
   detectionConfig,
   limitsConfig,
   reconcileConfig,
@@ -78,7 +79,7 @@ class HealthController {
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig, limitsConfig, reconcileConfig, treasuryConfig, historyConfig],
+      load: [serviceConfig, tatumConfig, webhookConfig, confirmationsConfig, detectionConfig, sweepConfig, limitsConfig, reconcileConfig, treasuryConfig, historyConfig, pricingConfig],
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

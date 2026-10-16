@@ -127,6 +127,14 @@ export const limitsConfig = registerAs('limits', () => {
   };
 });
 
+export const pricingConfig = registerAs('pricing', () => ({
+  /** USD quotes on outbound webhook payloads. Off → fields emit as null. */
+  enabled: process.env.PRICING_ENABLED !== 'false',
+  apiUrl: process.env.COINGECKO_API_URL ?? 'https://api.coingecko.com/api/v3',
+  /** Optional demo/pro key — sent as x-cg-demo-api-key; empty = free tier. */
+  apiKey: process.env.COINGECKO_API_KEY ?? '',
+}));
+
 export const reconcileConfig = registerAs('reconcile', () => ({
   enabled: process.env.RECONCILE_ENABLED !== 'false',
 }));
