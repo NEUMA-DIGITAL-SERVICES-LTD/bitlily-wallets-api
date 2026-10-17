@@ -61,6 +61,9 @@ export class NotifierService {
         txid: tx.txid,
         address: tx.address,
         amount: tx.amount,
+        // Best-known network fee: the request-time estimate until the
+        // first on-chain sighting replaces it with the actual fee.
+        fee: tx.fee ?? null,
         usdPrice: quote?.usdPrice ?? null,
         usdValue: quote?.usdValue ?? null,
         priceSource: quote?.priceSource ?? null,

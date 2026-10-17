@@ -91,6 +91,30 @@ describe('TransactionsService.send', () => {
     expect(provider.sendTransaction).not.toHaveBeenCalled();
   });
 
+  it('stamps the request-time fee estimate on the row — the app shows it without a second call', async () => {
+    provider.estimateFee = jest.fn().mockResolvedValue({ fee: '0.00021' });
+    provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
+
+    await service.send(dto, 'default');
+
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.fee).toBe('0.00021');
+    expect(provider.estimateFee).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'ETH' }), dto.toAddress, '0.01',
+    );
+  });
+
+  it('an estimate failure never blocks the send — fee stays null', async () => {
+    provider.estimateFee = jest.fn().mockRejectedValue(new Error('RPC down'));
+    provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
+
+    const tx = await service.send(dto, 'default');
+
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.fee).toBeNull();
+    expect(tx.txid).toBe('0xreal');
+  });
+
   it('debits first, then broadcasts, then records the real txid', async () => {
     provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
 

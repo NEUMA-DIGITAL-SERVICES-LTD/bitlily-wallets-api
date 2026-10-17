@@ -230,6 +230,19 @@ export class TransactionsService {
       return thr ? amount >= parseFloat(thr) : false;
     })();
 
+    // Stamp the network fee estimate AT REQUEST TIME — the app can show
+    // the user the cost in the same response that creates the send, no
+    // second call to /fees/estimate. tx.fee holds the estimate until the
+    // first on-chain sighting overwrites it with the actual fee. Kept
+    // outside the DB transaction: a provider call must not hold the
+    // wallet row lock, and an estimate failure never blocks the send.
+    let feeEstimate: string | null = null;
+    try {
+      feeEstimate = (
+        await this.provider.estimateFee(asset, dto.toAddress, dto.amount)
+      ).fee;
+    } catch { /* estimate unavailable — the broadcast path still decides */ }
+
     // Debit + pending row FIRST, atomically — a crash between here and
     // broadcast leaves a reconcilable pending row (placeholder txid).
     // Broadcasting first and recording after is how funds get double-sent
@@ -265,6 +278,7 @@ export class TransactionsService {
             txid: `pending:${crypto.randomUUID()}`,
             address: dto.toAddress,
             amount: dto.amount,
+            fee: feeEstimate,
             status: needsApproval ? 'requires_approval' : 'pending',
             requiredConfirmations: this.requiredConfirmations(asset.chain),
             reference: dto.reference,
