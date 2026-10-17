@@ -112,6 +112,18 @@ export const detectionConfig = registerAs('detection', () => ({
   strategy: (process.env.DEPOSIT_DETECTION ?? 'polling') as 'polling' | 'webhook',
   pollIntervalMs: parseInt(process.env.DEPOSIT_POLL_INTERVAL_MS ?? '120000', 10),
   addressTtlMinutes: parseInt(process.env.DEPOSIT_ADDRESS_TTL_MINUTES ?? '60', 10),
+  /**
+   * SOL deposit model. Solana is ed25519 — hardened-only derivation, no
+   * xpub — so per-user unique addresses must come from a pool pre-derived
+   * on the KMS host (scripts/sol-pool-seed.js → POST /admin/address-pool).
+   * true  = each wallet gets its own permanent SOL address (no memo needed)
+   * false = shared custody address + per-wallet memo attribution
+   * Pool exhaustion degrades to the shared+memo row and alerts ops —
+   * deposits keep working under the other attribution model.
+   */
+  solUniqueDeposits: process.env.SOL_UNIQUE_DEPOSITS === 'true',
+  /** Ops warning threshold for free pooled SOL addresses. */
+  solPoolLowWatermark: parseInt(process.env.SOL_POOL_LOW_WATERMARK ?? '20', 10),
 }));
 
 export const limitsConfig = registerAs('limits', () => {

@@ -12,6 +12,7 @@ import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
+import { AddressPool } from '../../database/entities/address-pool.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { ASSET_REGISTRY, Chain, enabledAssets, getAsset } from '../../config/assets';
 import {
@@ -212,7 +213,9 @@ export class WalletsService {
       const g: AddressGroup =
         grouped.get(r.address) ??
         { address: r.address, chain: r.chain, assets: [], expiresAt: null };
-      if (r.account?.memo) {
+      // memoRequired only when this row IS the shared custody address —
+      // a pooled per-user address needs no memo (it's uniquely theirs).
+      if (r.account?.memo && r.address === r.account.baseAddress) {
         g.memo = r.account.memo;
         g.memoRequired = true;
       }
@@ -314,6 +317,47 @@ export class WalletsService {
         }
       }
 
+      // Unique-address model for chains that can't derive addresses at
+      // runtime — SOL is ed25519 (hardened-only derivation, no xpub) and
+      // the KMS daemon has no derivation API, so addresses are pre-derived
+      // on the KMS host into address_pool. The wallet's pooled address is
+      // permanent: index-signable via custody signatureId + index for
+      // sweeps, no memo needed for attribution.
+      if (asset.chain === 'SOL' && this.config.get('detection.solUniqueDeposits')) {
+        const pooled = await this.allocatePoolAddress(em, account);
+        if (pooled) {
+          let row = await em.findOne(DepositAddress, {
+            where: {
+              account: { id: account.id },
+              address: pooled.address,
+              asset: asset.code,
+            },
+          });
+          if (!row) {
+            row = em.create(DepositAddress, {
+              account,
+              address: pooled.address,
+              chain: account.chain,
+              asset: asset.code,
+              derivationIndex: pooled.derivationIndex,
+              expiresAt: null, // per-user permanent — the user's address forever
+            });
+          }
+          row.status = 'active';
+          const saved = await em.save(row);
+          await this.ensureSameChainWatches(
+            em, account, saved.address, saved.derivationIndex, asset.code, null, reference,
+          );
+          return saved;
+        }
+        // Pool exhausted — degrade to shared-address+memo so deposits keep
+        // working, and alert ops: the pool needs a seed run, not a code fix.
+        this.logger.error(
+          'SOL address pool exhausted — falling back to shared baseAddress+memo. ' +
+          'Seed more addresses: scripts/sol-pool-seed.js → POST /admin/address-pool.',
+        );
+      }
+
       // Account-model chains (SOL) have a single base address and cannot
       // derive fresh ones. Reuse the active row: refresh reference/expiry
       // instead of colliding on the (address, asset) unique index. Per-order
@@ -387,6 +431,43 @@ export class WalletsService {
       }
       return dep;
     });
+  }
+
+  /**
+   * Allocates the wallet's pooled SOL address — reuses the row already
+   * assigned to this account, else claims the lowest free index.
+   * pessimistic_write on the claimed row serializes concurrent allocations;
+   * two wallets racing the same free row resolve on the FK update, and the
+   * loser re-reads the next free row on retry.
+   */
+  private async allocatePoolAddress(
+    em: EntityManager,
+    account: WalletAccount,
+  ): Promise<AddressPool | null> {
+    const assigned = await em.findOne(AddressPool, {
+      where: { account: { id: account.id } },
+    });
+    if (assigned) return assigned;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const free = await em.findOne(AddressPool, {
+        where: { chain: account.chain, account: IsNull() },
+        order: { derivationIndex: 'ASC' },
+      });
+      if (!free) return null;
+      const claimed = await em
+        .createQueryBuilder()
+        .update(AddressPool)
+        .set({ account, assignedAt: new Date() })
+        .where('id = :id AND wallet_account_id IS NULL', { id: free.id })
+        .execute();
+      if (claimed.affected === 1) {
+        free.account = account;
+        free.assignedAt = new Date();
+        return free;
+      }
+      // Lost the claim race — loop and take the next free row.
+    }
+    return null;
   }
 
   /**

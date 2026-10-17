@@ -2,10 +2,11 @@ import { Body, Controller, Get, Param, Patch, Post, Query, BadRequestException, 
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { IsArray, IsBoolean, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
+import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
+import { AddressPool } from '../../database/entities/address-pool.entity';
 import { TransactionsService } from '../transactions/transactions.service';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
 import { ClientsService } from '../../common/clients.service';
@@ -124,6 +125,33 @@ class CreditDepositDto {
   externalUserId: string;
 }
 
+class PoolEntryDto {
+  @ApiProperty({ description: 'Derivation index under the custody signatureId' })
+  @IsInt()
+  derivationIndex: number;
+
+  @ApiProperty({ description: 'Output of `tatum-kms getaddress {signatureId} {index}`' })
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+}
+
+class ImportPoolDto {
+  @ApiProperty({ description: 'Chain code — currently SOL' })
+  @IsString()
+  @IsNotEmpty()
+  chain: string;
+
+  @ApiProperty({
+    type: [PoolEntryDto],
+    description:
+      'Pre-derived (index → address) pairs from the KMS host. Duplicates ' +
+      'are skipped — re-running a seed range is safe.',
+  })
+  @IsArray()
+  entries: PoolEntryDto[];
+}
+
 class EnrollCustodyDto {
   @ApiProperty({ description: 'Chain code, e.g. BTC, ETH, SOL' })
   @IsString()
@@ -191,6 +219,8 @@ export class AdminController {
   constructor(
     @InjectRepository(CustodyAccount)
     private readonly custody: Repository<CustodyAccount>,
+    @InjectRepository(AddressPool)
+    private readonly pool: Repository<AddressPool>,
     private readonly transactions: TransactionsService,
     private readonly config: ConfigService,
     private readonly clients: ClientsService,
@@ -283,6 +313,54 @@ export class AdminController {
   @ApiOperation({ summary: 'List enrolled custody wallets per chain' })
   list() {
     return this.custody.find();
+  }
+
+  /**
+   * Bulk-import pre-derived custody addresses into the pool. Derivation
+   * MUST happen on the KMS host (getaddress is CLI-only, key material
+   * never leaves it) — this endpoint only records the results.
+   */
+  @Post('address-pool')
+  @ApiOperation({
+    summary:
+      'Import pre-derived deposit addresses (SOL: ed25519 has no xpub — ' +
+      'scripts/sol-pool-seed.js derives them on the KMS host). Idempotent ' +
+      'per (chain, index).',
+  })
+  async importPool(@Body() dto: ImportPoolDto) {
+    const chain = dto.chain.toUpperCase();
+    let imported = 0;
+    for (const e of dto.entries ?? []) {
+      const r = await this.pool
+        .createQueryBuilder()
+        .insert()
+        .values({ chain, derivationIndex: e.derivationIndex, address: e.address })
+        .orIgnore()
+        .execute();
+      if (r.identifiers?.length) imported++;
+    }
+    return { chain, received: dto.entries?.length ?? 0, imported };
+  }
+
+  @Get('address-pool/stats')
+  @ApiOperation({
+    summary:
+      'Pool health per chain — free vs assigned counts. Low `free` = run ' +
+      'the pool seed script before SOL_UNIQUE_DEPOSITS degrades to memo mode.',
+  })
+  async poolStats() {
+    const rows: { chain: string; free: string; assigned: string }[] =
+      await this.pool.query(
+        `SELECT chain,
+                COUNT(*) FILTER (WHERE wallet_account_id IS NULL) AS free,
+                COUNT(*) FILTER (WHERE wallet_account_id IS NOT NULL) AS assigned
+         FROM address_pool GROUP BY chain ORDER BY chain`,
+      );
+    return rows.map((r) => ({
+      chain: r.chain,
+      free: Number(r.free),
+      assigned: Number(r.assigned),
+    }));
   }
 
   @Get('clients')

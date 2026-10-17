@@ -17,6 +17,7 @@ import { WebhookEvent } from './webhook-event.entity';
 import { OutboundEvent } from './outbound-event.entity';
 import { CustodyAccount } from './custody-account.entity';
 import { ApiClient } from './api-client.entity';
+import { AddressPool } from './address-pool.entity';
 
 export const ALL_ENTITIES = [
   Wallet,
@@ -28,4 +29,5 @@ export const ALL_ENTITIES = [
   OutboundEvent,
   CustodyAccount,
   ApiClient,
+  AddressPool,
 ];

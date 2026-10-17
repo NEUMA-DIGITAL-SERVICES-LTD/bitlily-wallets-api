@@ -83,17 +83,17 @@ curl -X POST $BASE/wallets \
     { "address": "tb1q...", "chain": "BTC",  "assets": ["BTC"] },
     { "address": "0x8f3...", "chain": "ETH",  "assets": ["ETH","USDT_ETH","USDC_ETH"] },
     { "address": "TQpe...",  "chain": "TRON", "assets": ["TRX","USDT_TRON"] },
-    { "address": "9xQy...",  "chain": "SOL",
-      "assets": ["SOL","USDC_SOL"],
-      "memo": "bl-jw5pxfcb", "memoRequired": true }
+    { "address": "9xQy...",  "chain": "SOL", "assets": ["SOL","USDC_SOL"] }
   ]
 }
 ```
 
-**`memo` / `memoRequired`** — SOL uses a shared custody address; the memo is
-the only thing that attributes a deposit to this wallet. Deposits without it
-become *unattributed* (real funds, credited to no one — see §7). Surface this
-in your UI: SOL deposits must carry the memo.
+**SOL address model — two modes.** With `SOL_UNIQUE_DEPOSITS=true` each wallet
+gets its *own permanent SOL address* (shown above): uniquely attributed, no
+memo needed, sweepable via its custody derivation index. With the flag off
+(the legacy default), SOL rows carry `"memo": "bl-…", "memoRequired": true` —
+a shared custody address where the memo is the only attribution; memo-less
+deposits land in the unattributed ops queue (§7).
 
 ### `GET /api/v1/wallets/{externalUserId}` — wallet + balances + history
 

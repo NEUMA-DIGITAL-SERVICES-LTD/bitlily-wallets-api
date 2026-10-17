@@ -111,7 +111,10 @@ export class SweepService {
       if (r.kmsRequestId) pendingKms.push(r.kmsRequestId);
     };
 
-    if (asset.type === 'token' && (asset.chain === 'ETH' || asset.chain === 'POLYGON')) {
+    // SPL tokens join the gas-pump path: a pooled SOL deposit address
+    // holding only USDC can't pay the sweep fee — treasury tops it with
+    // SOL (custody index 0) first, same as ERC-20 on EVM chains.
+    if (asset.type === 'token' && (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'SOL')) {
       const pumped = await this.gasPump(dep, asset, custody, record);
       if (pumped) {
         // Gas top-up was just sent — it must confirm on-chain before the
@@ -185,6 +188,9 @@ export class SweepService {
       fromAccountId: dep.account.id,
       signatureId: custody.secretRef,
       derivationIndex: 0, // custody wallet's own address pays the gas
+      // Account-model chains (SOL) name the sender explicitly — the
+      // treasury/base address, which is custody index 0.
+      sourceAddress: custody.treasuryAddress ?? custody.baseAddress ?? undefined,
       toAddress: dep.address,
       amount: topUp,
       reference: `gas-pump:${dep.id}`,
