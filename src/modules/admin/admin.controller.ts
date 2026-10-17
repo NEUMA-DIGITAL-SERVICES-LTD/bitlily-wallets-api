@@ -126,11 +126,21 @@ class CreditDepositDto {
 }
 
 class PoolEntryDto {
-  @ApiProperty({ description: 'Derivation index under the custody signatureId' })
-  @IsInt()
-  derivationIndex: number;
+  @ApiProperty({
+    description:
+      'KMS signatureId owning this address — for SOL, one private-key ' +
+      'wallet per address (output of `generatemanagedwallet SOL`)',
+  })
+  @IsString()
+  @IsNotEmpty()
+  signatureId: string;
 
-  @ApiProperty({ description: 'Output of `tatum-kms getaddress {signatureId} {index}`' })
+  @ApiPropertyOptional({ description: 'Derivation index — mnemonic-type pool entries only; null for SOL' })
+  @IsInt()
+  @IsOptional()
+  derivationIndex?: number;
+
+  @ApiProperty({ description: 'The deposit address itself' })
   @IsString()
   @IsNotEmpty()
   address: string;
@@ -334,7 +344,12 @@ export class AdminController {
       const r = await this.pool
         .createQueryBuilder()
         .insert()
-        .values({ chain, derivationIndex: e.derivationIndex, address: e.address })
+        .values({
+          chain,
+          signatureId: e.signatureId,
+          derivationIndex: e.derivationIndex ?? null,
+          address: e.address,
+        })
         .orIgnore()
         .execute();
       if (r.identifiers?.length) imported++;

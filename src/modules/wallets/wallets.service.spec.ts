@@ -91,10 +91,11 @@ describe('WalletsService.permanentAddresses', () => {
 });
 
 /**
- * SOL_UNIQUE_DEPOSITS=true — pooled unique addresses. The pool row's
- * derivationIndex is what sweep signing uses (signatureId + index); the
- * address itself is what the poller attributes by. Exhaustion must
- * degrade to the shared-address+memo row, not fail wallet provisioning.
+ * SOL_UNIQUE_DEPOSITS=true — pooled unique addresses. Each pool row IS a
+ * keypair (its own signatureId — SOL has no index derivation); the dep row
+ * carries derivationIndex=null and sweeps resolve the signatureId by
+ * address. Exhaustion must degrade to the shared-address+memo row, not
+ * fail wallet provisioning.
  */
 describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', () => {
   const solAccount = {
@@ -105,7 +106,8 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
     wallet: { id: 'w1', appId: 'default' },
   };
   const poolRow = {
-    id: 'pool-1', chain: 'SOL', derivationIndex: 7, address: 'SoLpooled7',
+    id: 'pool-1', chain: 'SOL', signatureId: 'sig-pool-1',
+    derivationIndex: null, address: 'SoLpooled7',
     account: null, assignedAt: null,
   };
 
@@ -157,7 +159,8 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
     const res = await service.generateDepositAddress('w1', 'default', 'SOL');
 
     expect(res.address).toBe('SoLpooled7');
-    expect(res.derivationIndex).toBe(7);
+    // Private-key pool rows sign by signatureId — dep rows carry no index
+    expect(res.derivationIndex).toBeNull();
     expect(res.expiresAt).toBeNull();
     // Pool row claimed to this account
     expect(em.createQueryBuilder).toHaveBeenCalled();

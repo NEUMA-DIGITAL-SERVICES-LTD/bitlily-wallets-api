@@ -11,20 +11,20 @@ import {
 import { WalletAccount } from './wallet-account.entity';
 
 /**
- * Pre-derived custody addresses awaiting assignment. Needed for chains whose
- * addresses CANNOT be derived from an xpub at runtime — Solana is ed25519
- * (hardened-only derivation): each unique address requires KMS key material,
- * and the tatum-kms daemon exposes no derivation API (`getaddress` is
- * CLI-only). So addresses are derived in a batch on the KMS host
+ * Pre-provisioned per-user custody addresses awaiting assignment.
+ *
+ * Solana is ed25519 — hardened-only derivation, no xpub — and Tatum's SOL
+ * wallet is a single private key (no mnemonic, no index derivation):
+ * `getaddress {sigId} {anyIndex}` returns the same address forever. So a
+ * unique SOL deposit address means a unique KMS signatureId — one
+ * `generatemanagedwallet SOL` per address, run on the KMS host
  * (scripts/sol-pool-seed.js) and bulk-imported via POST /admin/address-pool.
  *
- * A row is free while `account` is NULL; allocation marks it assigned to the
- * wallet's chain account. The assigned index signs sweeps via the custody
- * signatureId + derivationIndex — the same model as xpub-derived chains,
- * with derivation happening offline instead of via Tatum's xpub endpoint.
+ * A row is free while `account` is NULL. Allocation binds it to the wallet's
+ * chain account; sweeps sign with the row's OWN signatureId (private-key
+ * type — no derivation index), so each user address pays its own way out.
  */
 @Entity('address_pool')
-@Unique(['chain', 'derivationIndex'])
 @Unique(['address'])
 export class AddressPool {
   @PrimaryGeneratedColumn('uuid')
@@ -34,8 +34,17 @@ export class AddressPool {
   @Column()
   chain: string;
 
-  @Column({ name: 'derivation_index', type: 'int' })
-  derivationIndex: number;
+  /**
+   * Private-key-type wallet (SOL): the signatureId IS the key reference.
+   * Mnemonic chains could use signatureId+derivationIndex instead — SOL
+   * never does, so the column stays nullable.
+   */
+  @Column({ name: 'signature_id' })
+  signatureId: string;
+
+  /** Reserved for mnemonic/xpub-type pool entries; NULL for SOL. */
+  @Column({ name: 'derivation_index', type: 'int', nullable: true })
+  derivationIndex: number | null;
 
   @Column()
   address: string;

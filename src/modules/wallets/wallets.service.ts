@@ -318,11 +318,12 @@ export class WalletsService {
       }
 
       // Unique-address model for chains that can't derive addresses at
-      // runtime — SOL is ed25519 (hardened-only derivation, no xpub) and
-      // the KMS daemon has no derivation API, so addresses are pre-derived
-      // on the KMS host into address_pool. The wallet's pooled address is
-      // permanent: index-signable via custody signatureId + index for
-      // sweeps, no memo needed for attribution.
+      // runtime — SOL is ed25519 AND Tatum's managed SOL wallet is a
+      // single private key (no index derivation — verified live: every
+      // index returns the same address). Unique SOL addresses are therefore
+      // whole keypairs minted on the KMS host into address_pool, one
+      // signatureId each. The wallet's pooled address is permanent: sweeps
+      // sign with the row's own signatureId; no memo needed.
       if (asset.chain === 'SOL' && this.config.get('detection.solUniqueDeposits')) {
         const pooled = await this.allocatePoolAddress(em, account);
         if (pooled) {
@@ -339,7 +340,9 @@ export class WalletsService {
               address: pooled.address,
               chain: account.chain,
               asset: asset.code,
-              derivationIndex: pooled.derivationIndex,
+              // Pooled SOL rows sign by signatureId, not index — the dep
+              // row carries null and sweeps resolve the pool row by address.
+              derivationIndex: null,
               expiresAt: null, // per-user permanent — the user's address forever
             });
           }
@@ -451,7 +454,7 @@ export class WalletsService {
     for (let attempt = 0; attempt < 3; attempt++) {
       const free = await em.findOne(AddressPool, {
         where: { chain: account.chain, account: IsNull() },
-        order: { derivationIndex: 'ASC' },
+        order: { createdAt: 'ASC' },
       });
       if (!free) return null;
       const claimed = await em

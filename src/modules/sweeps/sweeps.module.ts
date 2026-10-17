@@ -6,6 +6,7 @@ import { ApiProperty } from '@nestjs/swagger';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { AddressPool } from '../../database/entities/address-pool.entity';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
 import { SweepService } from './sweep.service';
 import { SweepSchedulerService } from './sweep-scheduler.service';
@@ -38,7 +39,7 @@ export class SweepController {
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([DepositAddress, CustodyAccount, Transaction]),
+    TypeOrmModule.forFeature([DepositAddress, CustodyAccount, Transaction, AddressPool]),
     NotificationsModule,
   ],
   controllers: [SweepController],

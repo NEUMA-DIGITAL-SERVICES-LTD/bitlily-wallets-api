@@ -10,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
+import { AddressPool } from '../../database/entities/address-pool.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { AssetDef, getAsset } from '../../config/assets';
 import {
@@ -39,6 +40,8 @@ export class SweepService {
     private readonly addresses: Repository<DepositAddress>,
     @InjectRepository(CustodyAccount)
     private readonly custody: Repository<CustodyAccount>,
+    @InjectRepository(AddressPool)
+    private readonly pool: Repository<AddressPool>,
     @InjectRepository(Transaction)
     private readonly txs: Repository<Transaction>,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
@@ -82,6 +85,19 @@ export class SweepService {
         { chain: dep.chain as any, xpub: custody.xpub, baseAddress: custody.baseAddress },
         0,
       ));
+
+    // Pooled unique addresses (SOL) sign with the row's OWN signatureId —
+    // private-key-type wallets have no derivation index. Shared/xpub
+    // addresses sign with the custody signatureId + dep.derivationIndex.
+    let signatureId = custody.secretRef;
+    let derivationIndex = dep.derivationIndex;
+    const pooled = await this.pool.findOne({
+      where: { chain: dep.chain, address: dep.address },
+    });
+    if (pooled?.signatureId) {
+      signatureId = pooled.signatureId;
+      derivationIndex = null;
+    }
 
     const rawBalance = await this.provider.getAddressBalance(dep.address, asset);
     if (parseFloat(rawBalance) <= 0) {
@@ -140,8 +156,8 @@ export class SweepService {
     const r = await this.provider.sendTransaction({
       asset,
       fromAccountId: dep.account.id,
-      signatureId: custody.secretRef,
-      derivationIndex: dep.derivationIndex,
+      signatureId,
+      derivationIndex,
       // UTXO chains need the source address for input selection AND as
       // changeAddress — omitting it would burn the whole input as fee
       // (the bug we already fixed once). SOL/TRON need it as `from`.
