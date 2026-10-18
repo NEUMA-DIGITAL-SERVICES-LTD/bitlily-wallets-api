@@ -27,6 +27,16 @@ import { NotifierService } from '../notifications/notifier.service';
 import { ListTransactionsDto, SendTransactionDto } from './transactions.dto';
 import { errCode, errMsg } from '../../common/errors';
 import { isPlausibleAddress } from '../../common/address-validation';
+import { WalletsService } from '../wallets/wallets.service';
+
+/**
+ * Sentinel user id for withdrawals submitted WITHOUT externalUserId — an
+ * app-level draw debited to a well-known wallet row so the ledger still
+ * closes. Not a magic value the client can collide with accidentally:
+ * real user ids containing this string would have to be chosen
+ * deliberately.
+ */
+const APP_LEVEL_EXTERNAL_ID = '__app_level__';
 
 @Injectable()
 export class TransactionsService {
@@ -41,6 +51,7 @@ export class TransactionsService {
     private readonly notifier: NotifierService,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly walletOps: WalletsService,
   ) {}
 
   /**
@@ -186,9 +197,17 @@ export class TransactionsService {
 
     // The wallet is addressed by the client's own user id — the API never
     // exposes our internal wallet uuid in request contracts.
-    const wallet = await this.wallets.findOne({
-      where: { externalUserId: dto.externalUserId, appId },
+    // externalUserId omitted → an app-level treasury draw: the debit lands
+    // on the tenant's sentinel wallet (auto-provisioned on first use) so
+    // every outbound still has a ledger identity. An EXPLICIT id still
+    // 404s on an unknown user — typo'd ids must fail fast, not mint wallets.
+    const extId = dto.externalUserId?.trim() || APP_LEVEL_EXTERNAL_ID;
+    let wallet = await this.wallets.findOne({
+      where: { externalUserId: extId, appId },
     });
+    if (!wallet && extId === APP_LEVEL_EXTERNAL_ID) {
+      wallet = await this.walletOps.createWallet(APP_LEVEL_EXTERNAL_ID, appId);
+    }
     if (!wallet) {
       throw new NotFoundException(`No wallet for externalUserId ${dto.externalUserId}`);
     }

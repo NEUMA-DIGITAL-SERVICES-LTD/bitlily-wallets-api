@@ -4,6 +4,7 @@ import { Transaction } from '../../database/entities/transaction.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { WalletsModule } from '../wallets/wallets.module';
 import { TransactionsController, WithdrawalsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
 
@@ -11,6 +12,7 @@ import { TransactionsService } from './transactions.service';
   imports: [
     TypeOrmModule.forFeature([Transaction, Wallet, WalletAccount]),
     NotificationsModule,
+    WalletsModule,
   ],
   controllers: [WithdrawalsController, TransactionsController],
   providers: [TransactionsService],

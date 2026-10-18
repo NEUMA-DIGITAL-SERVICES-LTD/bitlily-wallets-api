@@ -10,10 +10,17 @@ import { Type } from 'class-transformer';
 const POSITIVE_DECIMAL = /^\d+(\.\d{1,18})?$/;
 
 export class SendTransactionDto {
-  @ApiProperty({ description: 'The user ID in YOUR application — funds are drawn from that user\'s wallet' })
+  @ApiPropertyOptional({
+    description:
+      'The user ID in YOUR application — funds are debited from that ' +
+      'user\'s wallet (ledger attribution + tenant scoping). OMIT for an ' +
+      'app-level treasury draw: the debit lands on your app\'s internal ' +
+      '__app_level__ wallet, auto-provisioned on first use. An explicit ' +
+      'id still requires the wallet to exist (404 on unknown user).',
+  })
   @IsString()
-  @IsNotEmpty()
-  externalUserId: string;
+  @IsOptional()
+  externalUserId?: string;
 
   @ApiProperty({ description: 'Asset code, e.g. BTC, USDT_TRON' })
   @IsString()

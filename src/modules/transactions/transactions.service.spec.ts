@@ -31,6 +31,7 @@ describe('TransactionsService.send', () => {
   let notifier: any;
   let dataSource: any;
   let m: any;
+  let walletOps: any;
 
   beforeEach(() => {
     m = {
@@ -54,10 +55,12 @@ describe('TransactionsService.send', () => {
         findOne: jest.fn().mockResolvedValue(null),
       }),
     };
+    walletOps = { createWallet: jest.fn() };
     service = new TransactionsService(
       txs, wallets, accounts, provider, ledger, notifier,
       { get: jest.fn().mockReturnValue({}) } as any,
       dataSource,
+      walletOps,
     );
   });
 
@@ -112,6 +115,28 @@ describe('TransactionsService.send', () => {
 
     const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
     expect(created.fee).toBeNull();
+    expect(tx.txid).toBe('0xreal');
+  });
+
+  it('omitted externalUserId debits the app-level sentinel wallet (auto-provisioned)', async () => {
+    // No existing wallet — the sentinel path must create it, then use it.
+    wallets.findOne.mockResolvedValue(null);
+    const sentinelWallet = { id: 'w-app', externalUserId: '__app_level__' };
+    walletOps.createWallet.mockResolvedValue(sentinelWallet);
+    accounts.findOne.mockResolvedValue({ ...account, wallet: sentinelWallet });
+    provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
+
+    const tx = await service.send(
+      { asset: 'ETH', toAddress: '0x' + 'a'.repeat(40), amount: '0.01' } as any,
+      'default',
+    );
+
+    expect(walletOps.createWallet).toHaveBeenCalledWith('__app_level__', 'default');
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ externalUserId: '__app_level__' }),
+      expect.anything(), 'withdrawal', '0.01', 'debit',
+    );
     expect(tx.txid).toBe('0xreal');
   });
 
@@ -345,6 +370,7 @@ describe('TransactionsService.listForApp', () => {
       txs, {} as any, {} as any, {} as any, {} as any, {} as any,
       { get: jest.fn().mockReturnValue({}) } as any,
       {} as any,
+      {} as any,
     );
   });
 
@@ -433,6 +459,7 @@ describe('TransactionsService.validateAddress', () => {
       {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
       { get: jest.fn().mockReturnValue({}) } as any,
       {} as any,
+      {} as any,
     );
   });
 
@@ -481,6 +508,7 @@ describe('TransactionsService.estimateFee', () => {
       {} as any, {} as any, {} as any, provider, {} as any, {} as any,
       { get: jest.fn().mockReturnValue({}) } as any,
       { getRepository: jest.fn().mockReturnValue({ findOne: jest.fn().mockResolvedValue(null) }) } as any,
+      {} as any,
     );
   });
 
@@ -526,6 +554,7 @@ describe('TransactionsService.creditUnattributedDeposit', () => {
   let notifier: any;
   let dataSource: any;
   let m: any;
+  let walletOps: any;
 
   beforeEach(() => {
     m = {
@@ -544,6 +573,7 @@ describe('TransactionsService.creditUnattributedDeposit', () => {
       txs, wallets, {} as any, {} as any, ledger, notifier,
       { get: jest.fn().mockReturnValue({}) } as any,
       dataSource,
+      {} as any,
     );
   });
 

@@ -195,7 +195,7 @@ Each row carries `txid`, `confirmations` vs `requiredConfirmations`, `status`
 
 | Param | Required | What it's for |
 |---|---|---|
-| `externalUserId` | **yes** | Which user's wallet this draw is attributed to — always required (ledger identity + tenant scoping), even when the ledger balance check is disabled for your tenant |
+| `externalUserId` | no | Which user's wallet this draw is attributed to. **Omit for an app-level treasury draw** — the debit lands on your app's `__app_level__` wallet (auto-provisioned). An explicit unknown id still 404s — wallets must exist first |
 | `asset` | **yes** | `BTC, LTC, ETH, POL, SOL, TRX, USDT_TRON, USDT_ETH, USDC_ETH, USDC_POL, USDC_SOL` |
 | `toAddress` | **yes** | Destination — format-validated **before** the debit; malformed → 400, nothing moves |
 | `amount` | **yes** | Positive decimal string, human units — `"0.05"`. Regex-strict (no `-5`, `.5`, `1e3`) |
