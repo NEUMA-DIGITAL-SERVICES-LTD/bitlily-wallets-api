@@ -1,6 +1,6 @@
 import { Controller, Get, NotFoundException, Param, Query, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiExcludeController } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Transaction } from '../../database/entities/transaction.entity';
@@ -17,7 +17,7 @@ import { Public } from '../../common/api-key.guard';
  * in the daemon's --externalUrl path so the endpoint can't be probed for
  * pending-withdrawal existence. Also rate-limit at the edge in prod.
  */
-@ApiTags('kms')
+@ApiExcludeController()
 @Controller('api/v1/kms')
 export class KmsVerifyController {
   constructor(

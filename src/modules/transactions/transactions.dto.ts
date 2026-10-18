@@ -38,13 +38,13 @@ export class SendTransactionDto {
 
   @ApiPropertyOptional({
     description:
-      'Your reference (order/payout id) — echoed on the record AND the ' +
-      'idempotency boundary: unique per outbound send within your app. ' +
-      'A retry with the same reference and the same payload returns the ' +
-      'original transaction instead of double-sending; the same reference ' +
-      'with a DIFFERENT payload is rejected 409 — a reused reference is a ' +
-      'bug, not a retry. Omit it and every call sends fresh. REQUIRED in ' +
-      'production.',
+      'Your dedupe key (order/payout id) — echoed on the record AND the ' +
+      'uniqueness boundary: unique per outbound send within your app, and ' +
+      'CONSUMED on use. ANY repeated reference is rejected 409 — same ' +
+      'payload or different; this API never returns an old send as if it ' +
+      'were new. After a timeout/409, recover the original via ' +
+      'GET /transactions?reference=. Omit it and every call sends fresh. ' +
+      'REQUIRED in production.',
   })
   @IsString()
   @MaxLength(128)

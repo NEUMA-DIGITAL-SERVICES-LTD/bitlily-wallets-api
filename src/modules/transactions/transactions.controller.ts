@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
-import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
 import { EstimateFeeQueryDto, ListTransactionsDto, SendTransactionDto } from './transactions.dto';
 import { RequireScope } from '../../common/api-key.guard';
@@ -68,16 +68,28 @@ export class TransactionsController {
   @ApiOperation({
     summary:
       'Check an address format before submitting a send — same gate POST ' +
-      '/withdrawals applies. Pass `asset` (USDT_TRON → TRON) or `chain`; ' +
-      'returns {chain, address, valid}. Charset/length/prefix only — ' +
-      'checksum-valid-but-wrong destinations are the sender\'s ' +
-      'responsibility.',
+      '/withdrawals applies. Pass `asset` (USDT_TRON → TRON) or `chain` — ' +
+      'one of the two required, asset preferred. Returns {chain, address, ' +
+      'valid}. Charset/length/prefix only — checksum-valid-but-wrong ' +
+      'destinations are the sender\'s responsibility.',
+  })
+  @ApiQuery({ name: 'address', required: true, description: 'The address to check' })
+  @ApiQuery({
+    name: 'asset',
+    required: false,
+    description: 'Asset code — resolves its chain (USDT_TRON → TRON). One of asset/chain required.',
+  })
+  @ApiQuery({
+    name: 'chain',
+    required: false,
+    description: 'Raw chain code (BTC, LTC, ETH, POLYGON, SOL, TRON). One of asset/chain required.',
   })
   validateAddress(
     @Query('address') address: string,
     @Query('asset') asset?: string,
     @Query('chain') chain?: string,
   ) {
+    if (!address) throw new BadRequestException('address is required');
     return this.txs.validateAddress(address, { asset, chain });
   }
 }

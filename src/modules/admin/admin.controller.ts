@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, BadRequestException, NotFoundException, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
@@ -452,6 +452,7 @@ export class AdminController {
       'funds awaiting manual attribution; they credit no one until ' +
       'POST /deposits/:id/credit runs.',
   })
+  @ApiQuery({ name: 'chain', required: false, description: 'Narrow to one chain (e.g. SOL)' })
   listUnattributed(@Query('chain') chain?: string) {
     return this.transactions.listUnattributedDeposits(chain);
   }
