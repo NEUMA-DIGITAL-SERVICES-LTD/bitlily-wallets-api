@@ -122,8 +122,13 @@ count toward it.
 | Param | Required | What it's for |
 |---|---|---|
 | `address` | **yes** | The address to check |
-| `asset` | yes* | Asset code — `USDT_TRON` resolves to chain TRON. *Either `asset` or `chain` required |
-| `chain` | yes* | Raw chain code — `BTC, LTC, ETH, POLYGON, SOL, TRON` |
+| `asset` | one of | Asset code — `USDT_TRON` resolves to chain TRON |
+| `chain` | one of | Raw chain code — `BTC, LTC, ETH, POLYGON, SOL, TRON` |
+
+**Pass `asset` or `chain` — not both required, but at least one.** Prefer
+`asset`: it matches the vocabulary of `POST /withdrawals` and `/fees/estimate`.
+`chain` exists for checks asked before an asset is chosen ("is this a TRON
+address?"). Both absent → `400`; both present → `asset` wins.
 
 ```bash
 curl "$BASE/addresses/validate?asset=USDT_TRON&address=TQpeU63gg..." \
