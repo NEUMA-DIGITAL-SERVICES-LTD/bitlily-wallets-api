@@ -204,7 +204,7 @@ Each row carries `txid`, `confirmations` vs `requiredConfirmations`, `status`
 | `asset` | **yes** | `BTC, LTC, ETH, POL, SOL, TRX, USDT_TRON, USDT_ETH, USDC_ETH, USDC_POL, USDC_SOL` |
 | `toAddress` | **yes** | Destination — format-validated **before** the debit; malformed → 400, nothing moves |
 | `amount` | **yes** | Positive decimal string, human units — `"0.05"`. Regex-strict (no `-5`, `.5`, `1e3`) |
-| `reference` | recommended | **Your idempotency key.** Unique per send in your app. Same reference + same payload → returns the original tx (safe retry). Same reference + different payload → **409**. Omit it and every call sends fresh — required in production |
+| `reference` | recommended | **Your dedupe key — consumed, never replayed.** Unique per send in your app. **Any** repeated reference → **409** (same payload or not — this API never returns an old send as if it were new). Omit it and every call sends fresh — effectively required in production |
 
 ```bash
 curl -X POST $BASE/withdrawals \
@@ -230,6 +230,18 @@ the actual chain fee once the tx is sighted on-chain.
 7. Broadcast via Tatum/KMS; `txid` replaced by the real hash
 8. `withdrawal.broadcast` → status worker tracks → `withdrawal.confirmed`
    (or `withdrawal.failed` with automatic debit reversal)
+
+**Retrying after a timeout or 409:** the `reference` is a *consumed* key,
+not a replay key — resubmitting always errors. The recovery protocol is:
+
+1. POST times out or returns 409 → `GET /transactions?reference=<ref>`
+2. Tx exists → that send already executed; use its `id`/`status`/`txid`
+3. No rows → the send never landed; retry POST with a **new** reference
+
+This is stricter than replay-style idempotency by design: a reused key can
+never silently alias two different sends, and there is no "is the payload
+*really* identical" comparison to game (`"10"` vs `"10.0"`, reordered
+fields). The 409 body names the conflicting tx id and status.
 
 **Balance semantics:** with `enforceBalance=true` (default), step 4 also
 verifies `ledger balance ≥ amount` under a row lock. For `acme`
