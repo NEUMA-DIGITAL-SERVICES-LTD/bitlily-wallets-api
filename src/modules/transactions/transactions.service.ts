@@ -505,6 +505,18 @@ export class TransactionsService {
   }
 
   /**
+   * Wire serializer — raw entities never leave the service: `raw`
+   * (provider payloads, KMS request ids), `idempotencyKey` (legacy column)
+   * and the nested wallet object stay internal; externalUserId flattens
+   * attribution onto the row. Same contract as listForApp — single-tx
+   * reads must not leak what the list feed deliberately strips.
+   */
+  toView(t: Transaction) {
+    const { raw: _raw, idempotencyKey: _ik, wallet, ...rest } = t;
+    return { ...rest, externalUserId: wallet?.externalUserId ?? null };
+  }
+
+  /**
    * App-wide transaction feed — everything the tenant's key can see,
    * flattened. Internal consolidation rows (sweeps, gas pumps) are excluded:
    * they're custody plumbing, not user activity, and would read as phantom
@@ -551,11 +563,7 @@ export class TransactionsService {
     if (q.txid) qb.andWhere('t.txid = :txid', { txid: q.txid });
 
     const [rows, total] = await qb.getManyAndCount();
-    const data = rows.map(({ raw: _r, wallet, ...t }) => ({
-      ...t,
-      externalUserId: wallet?.externalUserId,
-    }));
-    return { data, total, page, limit };
+    return { data: rows.map((t) => this.toView(t)), total, page, limit };
   }
 
   /**

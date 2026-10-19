@@ -665,3 +665,35 @@ describe('TransactionsService.creditUnattributedDeposit', () => {
     expect(res[0]).not.toHaveProperty('raw'); // provider blobs stay off the wire
   });
 });
+
+describe('TransactionsService.toView', () => {
+  const service = new TransactionsService(
+    {} as any, {} as any, {} as any, {} as any, {} as any, {} as any,
+    { get: jest.fn().mockReturnValue({}) } as any,
+    {} as any,
+    {} as any,
+  );
+
+  it('strips raw, idempotencyKey and the wallet object — flattens externalUserId', () => {
+    const view = service.toView({
+      id: 'tx-1', direction: 'outbound', chain: 'TRON', asset: 'TRX',
+      txid: 'abc', address: 'TQpe', amount: '5', fee: '1',
+      status: 'pending', confirmations: 0, requiredConfirmations: 19,
+      blockNumber: null, reference: 'ref-1', idempotencyKey: 'legacy-x',
+      raw: { kmsRequestId: 'secret-internal' },
+      wallet: { externalUserId: 'user_1001' },
+      createdAt: new Date(0), updatedAt: new Date(0),
+    } as any);
+
+    expect(view.externalUserId).toBe('user_1001');
+    expect(view).not.toHaveProperty('raw');
+    expect(view).not.toHaveProperty('idempotencyKey');
+    expect(view).not.toHaveProperty('wallet');
+    expect(view.reference).toBe('ref-1');
+  });
+
+  it('externalUserId is explicit null when the tx has no wallet (unattributed)', () => {
+    const view = service.toView({ id: 't', wallet: null } as any);
+    expect(view.externalUserId).toBeNull();
+  });
+});

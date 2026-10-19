@@ -1,8 +1,8 @@
 import { Body, Controller, Module, Post, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { IsNotEmpty, IsUUID } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
@@ -17,6 +17,17 @@ class SweepDto {
   @IsUUID()
   @IsNotEmpty()
   depositAddressId: string;
+}
+
+export class SweepResultDto {
+  @ApiProperty({ type: [String], description: 'Broadcast txids — gas top-up (if any) plus the sweep itself' })
+  txids: string[];
+
+  @ApiProperty({ type: [String], description: 'KMS request ids pending daemon signature' })
+  pendingKms: string[];
+
+  @ApiPropertyOptional({ description: 'Amount moved, decimal string' })
+  amount?: string;
 }
 
 @ApiTags('admin')
@@ -34,6 +45,7 @@ export class SweepController {
       'treasury first; call again after the top-up confirms to complete ' +
       'the sweep.',
   })
+  @ApiOkResponse({ type: SweepResultDto })
   sweep(@Body() dto: SweepDto) {
     return this.sweeps.sweepAddress(dto.depositAddressId);
   }

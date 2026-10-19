@@ -131,3 +131,104 @@ export class EstimateFeeQueryDto {
   @Matches(POSITIVE_DECIMAL, { message: 'amount must be a positive decimal' })
   amount: string;
 }
+
+/**
+ * Wire shape of a transaction. `raw` (provider payloads, KMS request ids)
+ * and the nested wallet object never leave the service — the serializer
+ * is TransactionsService.toView, applied at every entity-returning
+ * endpoint so single-tx reads match the list feed's contract.
+ */
+export class TransactionViewDto {
+  @ApiProperty() id: string;
+
+  @ApiProperty({ enum: TX_DIRECTIONS })
+  direction: string;
+
+  @ApiProperty({ example: 'TRON' })
+  chain: string;
+
+  @ApiProperty({ example: 'USDT_TRON' })
+  asset: string;
+
+  @ApiProperty({ description: 'On-chain transaction hash' })
+  txid: string;
+
+  @ApiProperty({
+    description: 'Inbound: the deposit address that received funds. Outbound: the destination.',
+  })
+  address: string;
+
+  @ApiProperty({ description: 'Decimal string, human units', example: '5' })
+  amount: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'Network fee in native units — estimate stamped at request time, ' +
+      'replaced by the actual chain fee once the tx is sighted on-chain.',
+  })
+  fee?: string | null;
+
+  @ApiProperty({ enum: TX_STATUSES })
+  status: string;
+
+  @ApiProperty()
+  confirmations: number;
+
+  @ApiProperty()
+  requiredConfirmations: number;
+
+  @ApiPropertyOptional({ nullable: true })
+  blockNumber?: number | null;
+
+  @ApiPropertyOptional({ nullable: true, description: 'Your dedupe key, echoed back' })
+  reference?: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Owner of the debited/credited wallet — null on unattributed deposits',
+  })
+  externalUserId?: string | null;
+
+  @ApiProperty()
+  createdAt: Date;
+
+  @ApiProperty()
+  updatedAt: Date;
+}
+
+export class TransactionListViewDto {
+  @ApiProperty({ type: [TransactionViewDto] })
+  data: TransactionViewDto[];
+
+  @ApiProperty({ description: 'Total rows matching the filters' })
+  total: number;
+
+  @ApiProperty()
+  page: number;
+
+  @ApiProperty()
+  limit: number;
+}
+
+export class FeeEstimateViewDto {
+  @ApiProperty({ description: 'Native asset the fee is denominated in, e.g. TRX' })
+  asset: string;
+
+  @ApiProperty({ description: 'Estimated network fee — decimal string, native units' })
+  fee: string;
+
+  @ApiPropertyOptional({ description: 'slow | medium | fast when the provider supports tiers' })
+  speed?: string;
+}
+
+export class ValidateAddressViewDto {
+  @ApiProperty()
+  address: string;
+
+  @ApiProperty({ description: 'The resolved chain (asset wins over chain when both are passed)' })
+  chain: string;
+
+  @ApiProperty({ description: 'false is an answer, not an error — use it inline in your UI' })
+  valid: boolean;
+}

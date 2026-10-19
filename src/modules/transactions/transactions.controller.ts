@@ -1,8 +1,28 @@
 import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiResponse,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 import { TransactionsService } from './transactions.service';
-import { EstimateFeeQueryDto, ListTransactionsDto, SendTransactionDto } from './transactions.dto';
+import {
+  EstimateFeeQueryDto,
+  FeeEstimateViewDto,
+  ListTransactionsDto,
+  SendTransactionDto,
+  TransactionListViewDto,
+  TransactionViewDto,
+  ValidateAddressViewDto,
+} from './transactions.dto';
 import { RequireScope } from '../../common/api-key.guard';
+import { ErrorResponseDto } from '../../common/error-response.dto';
 
 @ApiTags('withdrawals')
 @ApiSecurity('x-api-key')
@@ -22,8 +42,18 @@ export class WithdrawalsController {
       'enforceBalance=false (your backend then owns solvency checks — ' +
       'e.g. fiat-funded withdrawals).',
   })
+  @ApiCreatedResponse({ type: TransactionViewDto })
+  @ApiBadRequestResponse({
+    type: ErrorResponseDto,
+    description: 'Malformed address/amount, over-limit, or insufficient balance (enforce tenants)',
+  })
+  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown externalUserId' })
+  @ApiConflictResponse({ type: ErrorResponseDto, description: 'reference already used — fetch the original via GET /transactions?reference=' })
+  @ApiResponse({ status: 502, type: ErrorResponseDto, description: 'Broadcast failed — debit reversed' })
+  @ApiResponse({ status: 503, type: ErrorResponseDto, description: 'Chain treasury cannot cover amount+fee' })
   send(@Body() dto: SendTransactionDto, @Req() req: any) {
-    return this.txs.send(dto, req.appId, req.enforceBalance !== false);
+    return this.txs.send(dto, req.appId, req.enforceBalance !== false)
+      .then((tx) => this.txs.toView(tx));
   }
 }
 
@@ -42,6 +72,8 @@ export class TransactionsController {
       'by direction, status, chain, asset, externalUserId, reference, ' +
       'txid. Internal consolidation (sweeps) never appears here.',
   })
+  @ApiOkResponse({ type: TransactionListViewDto })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Unknown chain/asset filter' })
   list(@Query() q: ListTransactionsDto, @Req() req: any) {
     return this.txs.listForApp(req.appId, q);
   }
@@ -49,8 +81,10 @@ export class TransactionsController {
   @RequireScope('wallet')
   @Get('transactions/:id')
   @ApiOperation({ summary: 'Get transaction status (deposits and withdrawals)' })
+  @ApiOkResponse({ type: TransactionViewDto })
+  @ApiNotFoundResponse({ type: ErrorResponseDto })
   get(@Param('id') id: string, @Req() req: any) {
-    return this.txs.get(id, req.appId);
+    return this.txs.get(id, req.appId).then((tx) => this.txs.toView(tx));
   }
 
   @Get('fees/estimate')
@@ -60,6 +94,8 @@ export class TransactionsController {
       'for a destination-priced quote, omit it for a typical-transfer ' +
       'estimate.',
   })
+  @ApiOkResponse({ type: FeeEstimateViewDto })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Unknown asset or malformed toAddress' })
   estimateFee(@Query() q: EstimateFeeQueryDto) {
     return this.txs.estimateFee(q.asset, q.toAddress, q.amount);
   }
@@ -84,6 +120,8 @@ export class TransactionsController {
     required: false,
     description: 'Raw chain code (BTC, LTC, ETH, POLYGON, SOL, TRON). One of asset/chain required.',
   })
+  @ApiOkResponse({ type: ValidateAddressViewDto })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Missing address, or neither asset nor chain passed / unknown' })
   validateAddress(
     @Query('address') address: string,
     @Query('asset') asset?: string,

@@ -1,5 +1,17 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, BadRequestException, NotFoundException, UseGuards } from '@nestjs/common';
-import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBadRequestResponse,
+  ApiConflictResponse,
+  ApiCreatedResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ErrorResponseDto } from '../../common/error-response.dto';
+import { TransactionViewDto } from '../transactions/transactions.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IsArray, IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
@@ -123,6 +135,77 @@ class CreditDepositDto {
   @IsString()
   @IsNotEmpty()
   externalUserId: string;
+}
+
+// ---- response DTOs (wire shapes; entities never leave the service) ----
+
+export class CustodyViewDto {
+  @ApiProperty() id: string;
+  @ApiProperty({ example: 'SOL' }) chain: string;
+  @ApiPropertyOptional({ nullable: true }) xpub?: string | null;
+  @ApiPropertyOptional({ nullable: true, description: 'Base/shared address for account-model chains' }) baseAddress?: string | null;
+  @ApiProperty({ description: 'KMS signatureId of the enrolled wallet — an identifier, not key material' }) secretRef: string;
+  @ApiPropertyOptional({ nullable: true }) treasuryAddress?: string | null;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty() updatedAt: Date;
+}
+
+export class PoolImportResultDto {
+  @ApiProperty() chain: string;
+  @ApiProperty({ description: 'Entries received in this request' }) received: number;
+  @ApiProperty({ description: 'Newly inserted rows — duplicates are skipped' }) imported: number;
+}
+
+export class PoolStatsDto {
+  @ApiProperty() chain: string;
+  @ApiProperty({ description: 'Unassigned addresses available for new wallets' }) free: number;
+  @ApiProperty() assigned: number;
+}
+
+export class ClientListItemDto {
+  @ApiProperty() slug: string;
+  @ApiPropertyOptional({ nullable: true }) name?: string | null;
+  @ApiProperty({ enum: ['env', 'db'], description: 'env = defined in CLIENTS JSON (API-immutable); db = PATCHable' }) source: string;
+  @ApiProperty({ description: 'Last 4 chars of the API key — the full key is never listed' }) keyTail: string;
+  @ApiProperty({ type: [String] }) scopes: string[];
+  @ApiProperty() webhookConfigured: boolean;
+  @ApiPropertyOptional({ nullable: true, type: [String] }) allowedIps?: string[] | null;
+  @ApiProperty() enforceBalance: boolean;
+  @ApiProperty() active: boolean;
+}
+
+export class ClientCredentialsDto {
+  @ApiProperty() slug: string;
+  @ApiPropertyOptional({ nullable: true }) name?: string | null;
+  @ApiPropertyOptional({ nullable: true, description: 'Present ONLY on create or after rotate:true — never re-emitted otherwise' }) apiKey?: string | null;
+  @ApiPropertyOptional({ nullable: true, description: 'Same lifecycle as apiKey' }) webhookSecret?: string | null;
+  @ApiProperty({ type: [String] }) scopes: string[];
+  @ApiPropertyOptional({ nullable: true, type: [String] }) allowedIps?: string[] | null;
+  @ApiProperty() enforceBalance: boolean;
+  @ApiPropertyOptional() active?: boolean;
+}
+
+export class UnattributedDepositViewDto {
+  @ApiProperty() id: string;
+  @ApiProperty() chain: string;
+  @ApiProperty() asset: string;
+  @ApiProperty() txid: string;
+  @ApiProperty() address: string;
+  @ApiProperty() amount: string;
+  @ApiProperty() status: string;
+  @ApiProperty() confirmations: number;
+  @ApiPropertyOptional({ nullable: true }) blockNumber?: number | null;
+  @ApiPropertyOptional({ nullable: true, description: 'Memo carried by the deposit, if any' }) memo?: string | null;
+  @ApiPropertyOptional({ nullable: true }) detectedVia?: string | null;
+  @ApiProperty() createdAt: Date;
+}
+
+export class WatchedAddressViewDto {
+  @ApiProperty() address: string;
+  @ApiProperty() chain: string;
+  @ApiProperty() asset: string;
+  @ApiProperty({ enum: ['active', 'expired'] }) status: string;
+  @ApiPropertyOptional({ nullable: true }) expiresAt?: Date | null;
 }
 
 class PoolEntryDto {
@@ -249,12 +332,16 @@ export class AdminController {
       'Used for late payments to expired addresses and wrong-asset sends. ' +
       'Moved out of the client surface: this is operator tooling.',
   })
-  async watchWalletAddress(@Param('id') id: string, @Body() dto: WatchAddressDto) {
+  @ApiOkResponse({ type: WatchedAddressViewDto })
+  @ApiNotFoundResponse({ type: ErrorResponseDto })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Address is not on this wallet / wrong chain' })
+  async watchWalletAddress(@Param('id') id: string, @Body() dto: WatchAddressDto): Promise<WatchedAddressViewDto> {
     const wallet = await this.wallets.findOne({ where: { id } });
     if (!wallet) throw new NotFoundException(`Wallet ${id} not found`);
-    return this.walletOps.watchAddress(
+    const d = await this.walletOps.watchAddress(
       id, wallet.appId, dto.address, dto.asset, dto.expiresInMinutes,
     );
+    return { address: d.address, chain: d.chain, asset: d.asset, status: d.status, expiresAt: d.expiresAt };
   }
 
   @Post('custody')
@@ -266,6 +353,8 @@ export class AdminController {
       'getaddress {signatureId} 0`, verified against the submitted ' +
       'xpub/baseAddress — a signatureId from a different wallet is refused.',
   })
+  @ApiOkResponse({ type: CustodyViewDto })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Missing xpub+baseAddress, pair-proof mismatch, or signatureId conflict without rotate' })
   async enroll(@Body() dto: EnrollCustodyDto) {
     if (!dto.xpub && !dto.baseAddress) {
       throw new BadRequestException('xpub or baseAddress required');
@@ -326,6 +415,7 @@ export class AdminController {
 
   @Get('custody')
   @ApiOperation({ summary: 'List enrolled custody wallets per chain' })
+  @ApiOkResponse({ type: [CustodyViewDto] })
   list() {
     return this.custody.find();
   }
@@ -342,6 +432,7 @@ export class AdminController {
       'scripts/sol-pool-seed.js mints one KMS keypair per address on the ' +
       'KMS host). Idempotent per address.',
   })
+  @ApiCreatedResponse({ type: PoolImportResultDto })
   async importPool(@Body() dto: ImportPoolDto) {
     const chain = dto.chain.toUpperCase();
     let imported = 0;
@@ -368,6 +459,7 @@ export class AdminController {
       'Pool health per chain — free vs assigned counts. Low `free` = run ' +
       'the pool seed script before SOL_UNIQUE_DEPOSITS degrades to memo mode.',
   })
+  @ApiOkResponse({ type: [PoolStatsDto] })
   async poolStats() {
     const rows: { chain: string; free: string; assigned: string }[] =
       await this.pool.query(
@@ -389,6 +481,7 @@ export class AdminController {
       'List registered API clients (tenants) — slug, name, webhook URL ' +
       'presence. Keys never leave this endpoint.',
   })
+  @ApiOkResponse({ type: [ClientListItemDto] })
   listClients() {
     return this.clients.list();
   }
@@ -399,6 +492,7 @@ export class AdminController {
       'Register a new API client (tenant). Returns apiKey + webhookSecret ' +
       'ONCE — they are not retrievable afterwards.',
   })
+  @ApiCreatedResponse({ type: ClientCredentialsDto })
   async createClient(@Body() dto: CreateClientDto) {
     const row = await this.clients.create(dto);
     return {
@@ -418,14 +512,19 @@ export class AdminController {
       'Update a client — webhookUrl, scopes, active, or rotate:true to ' +
       'regenerate credentials (old key dies immediately)',
   })
+  @ApiOkResponse({ type: ClientCredentialsDto })
+  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown slug — env-defined clients are API-immutable by design' })
   async updateClient(@Param('slug') slug: string, @Body() dto: UpdateClientDto) {
     const row = await this.clients.update(slug, dto, dto.rotate === true);
     if (!row) throw new NotFoundException(`Client ${slug} not found`);
+    // Credentials surface only when just-minted — re-emitting stored
+    // secrets on every PATCH would void the "returned once" contract.
+    const minted = dto.rotate === true;
     return {
       slug: row.slug,
       name: row.name,
-      apiKey: row.apiKey,
-      webhookSecret: row.webhookSecret,
+      apiKey: minted ? row.apiKey : null,
+      webhookSecret: minted ? row.webhookSecret : null,
       scopes: row.scopes,
       allowedIps: row.allowedIps,
       enforceBalance: row.enforceBalance,
@@ -437,16 +536,20 @@ export class AdminController {
   @ApiOperation({
     summary: 'Approve a parked requires_approval withdrawal — broadcasts it',
   })
+  @ApiOkResponse({ type: TransactionViewDto })
+  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown or non-parked withdrawal' })
   approve(@Param('id') id: string) {
-    return this.transactions.approveWithdrawal(id);
+    return this.transactions.approveWithdrawal(id).then((tx) => this.transactions.toView(tx));
   }
 
   @Post('withdrawals/:id/reject')
   @ApiOperation({
     summary: 'Reject a parked withdrawal — reverses the ledger debit',
   })
+  @ApiOkResponse({ type: TransactionViewDto })
+  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown or non-parked withdrawal' })
   reject(@Param('id') id: string) {
-    return this.transactions.rejectWithdrawal(id);
+    return this.transactions.rejectWithdrawal(id).then((tx) => this.transactions.toView(tx));
   }
 
   @Get('deposits/unattributed')
@@ -458,6 +561,7 @@ export class AdminController {
       'POST /deposits/:id/credit runs.',
   })
   @ApiQuery({ name: 'chain', required: false, description: 'Narrow to one chain (e.g. SOL)' })
+  @ApiOkResponse({ type: [UnattributedDepositViewDto] })
   listUnattributed(@Query('chain') chain?: string) {
     return this.transactions.listUnattributedDeposits(chain);
   }
@@ -470,9 +574,12 @@ export class AdminController {
       'idempotent — an already-attributed deposit returns 409 rather ' +
       'than double-crediting.',
   })
+  @ApiCreatedResponse({ type: TransactionViewDto })
+  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown deposit id or no wallet for (appId, externalUserId)' })
+  @ApiConflictResponse({ type: ErrorResponseDto, description: 'Deposit already attributed' })
   creditDeposit(@Param('id') id: string, @Body() dto: CreditDepositDto) {
     return this.transactions.creditUnattributedDeposit(
       id, dto.appId, dto.externalUserId,
-    );
+    ).then((tx) => this.transactions.toView(tx));
   }
 }

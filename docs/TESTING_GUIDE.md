@@ -284,12 +284,18 @@ your `webhookSecret` (`x-bitlily-signature`, `x-bitlily-timestamp` headers —
 
 | Event | Fires when |
 |---|---|
-| `deposit.detected` | Inbound tx first sighted on-chain |
-| `deposit.confirmed` | Required confirmations reached — **safe to credit the user** |
+| `deposit.confirmed` | Required confirmations reached — **safe to credit the user** (no earlier "detected" event exists; first sight IS confirmed) |
 | `deposit.reorged` | A confirmed deposit lost confirmations — reverse your credit |
+| `deposit.unattributed` | Real funds on a shared address, memo matched no wallet — ops queue, never auto-credited |
+| `withdrawal.requires_approval` | Over the approval threshold — parked until admin decision |
+| `withdrawal.pending_signature` | Handed to the KMS signer |
 | `withdrawal.broadcast` | Send accepted on-chain; carries `txid` + estimated `fee` |
 | `withdrawal.confirmed` | Final — actual `fee` now on the payload |
 | `withdrawal.failed` | Broadcast/solvency failed — debit reversed, notify the user |
+| `withdrawal.rejected` | Admin rejected a parked withdrawal — debit reversed |
+| `withdrawal.reconcile_required` | On-chain and ledger disagree — investigate |
+| `treasury.insufficient` / `treasury.gas_low` | Treasury can't cover a send / gas — ops alerts |
+| `sweep.failed` / `reconciliation.divergence` | Consolidation failed / books vs chain diverge — ops alerts |
 
 Payload `data` block:
 
@@ -311,7 +317,7 @@ Payload `data` block:
 - Delivery retries on non-2xx — **make your handler idempotent** on
   `transactionId`+`status`; the same event can legitimately arrive twice
 
-`GET /webhook` (unauthenticated) returns this documentation as JSON —
+`GET /webhook` (unauthenticated) serves this documentation as **Markdown** —
 `curl http://localhost:3100/webhook` for a self-describing reference.
 
 ---
