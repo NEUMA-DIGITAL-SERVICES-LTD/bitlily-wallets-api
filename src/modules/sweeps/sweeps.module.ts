@@ -20,7 +20,7 @@ class SweepDto {
 }
 
 @ApiTags('admin')
-@ApiSecurity('x-api-key')
+@ApiSecurity({ 'x-api-key': [], 'x-admin-key': [] })
 @UseGuards(AdminKeyGuard)
 @Controller('api/v1/admin')
 export class SweepController {
@@ -29,8 +29,10 @@ export class SweepController {
   @Post('sweep')
   @ApiOperation({
     summary:
-      'Sweep a deposit address to treasury — KMS-signed. EVM tokens gas-pump ' +
-      'first; call again after the top-up confirms to complete the sweep.',
+      'Sweep a deposit address to treasury — KMS-signed. Token sweeps on ' +
+      'gas-hungry chains (EVM ERC-20, SOL SPL) pump native gas from ' +
+      'treasury first; call again after the top-up confirms to complete ' +
+      'the sweep.',
   })
   sweep(@Body() dto: SweepDto) {
     return this.sweeps.sweepAddress(dto.depositAddressId);

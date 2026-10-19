@@ -155,8 +155,10 @@ class ImportPoolDto {
   @ApiProperty({
     type: [PoolEntryDto],
     description:
-      'Pre-derived (index → address) pairs from the KMS host. Duplicates ' +
-      'are skipped — re-running a seed range is safe.',
+      'Pre-minted {signatureId, address} pairs generated on the KMS host ' +
+      '(scripts/sol-pool-seed.js — one `generatemanagedwallet` per entry; ' +
+      'key material never leaves KMS). Duplicates skipped — re-running ' +
+      'a seed is safe.',
   })
   @IsArray()
   entries: PoolEntryDto[];
@@ -258,8 +260,11 @@ export class AdminController {
   @Post('custody')
   @ApiOperation({
     summary:
-      'Enroll a KMS-managed wallet for a chain (xpub + signatureId + ' +
-      'kmsAddress pair proof from `tatum-kms getaddress {signatureId} 0`)',
+      'Enroll a KMS-managed wallet for a chain. One of `xpub` (HD chains) ' +
+      'or `baseAddress` (account-model chains like SOL) is required — both ' +
+      'absent → 400. `kmsAddress` is the pair proof: output of `tatum-kms ' +
+      'getaddress {signatureId} 0`, verified against the submitted ' +
+      'xpub/baseAddress — a signatureId from a different wallet is refused.',
   })
   async enroll(@Body() dto: EnrollCustodyDto) {
     if (!dto.xpub && !dto.baseAddress) {
@@ -333,9 +338,9 @@ export class AdminController {
   @Post('address-pool')
   @ApiOperation({
     summary:
-      'Import pre-derived deposit addresses (SOL: ed25519 has no xpub — ' +
-      'scripts/sol-pool-seed.js derives them on the KMS host). Idempotent ' +
-      'per (chain, index).',
+      'Import pre-minted deposit addresses (SOL: ed25519 has no xpub — ' +
+      'scripts/sol-pool-seed.js mints one KMS keypair per address on the ' +
+      'KMS host). Idempotent per address.',
   })
   async importPool(@Body() dto: ImportPoolDto) {
     const chain = dto.chain.toUpperCase();

@@ -13,7 +13,7 @@ export class CreateWalletDto {
       'Assets to provision PERMANENT deposit addresses for, e.g. ' +
       '["TRX","USDT_TRON"]. Idempotent per chain — first call derives, ' +
       'later calls return the same address; same-chain assets share one ' +
-      'address. OMIT to provision every HD-derivable chain at once — the ' +
+      'address. OMIT to provision every supported chain at once — the ' +
       'response always carries the wallet\'s full permanent address set.',
   })
   @IsArray()

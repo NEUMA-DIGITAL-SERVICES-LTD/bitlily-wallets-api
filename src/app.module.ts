@@ -1,4 +1,5 @@
 import { Controller, Get, Module, ServiceUnavailableException } from '@nestjs/common';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -30,6 +31,7 @@ import { SecretsModule } from './secrets/secrets.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { SweepsModule } from './modules/sweeps/sweeps.module';
 
+@ApiTags('system')
 @Controller('api/v1')
 class HealthController {
   constructor(
@@ -40,6 +42,7 @@ class HealthController {
   /** Liveness — process is up. Never checks dependencies. */
   @Public()
   @Get('health')
+  @ApiOperation({ summary: 'Liveness — process is up; never checks dependencies' })
   health() {
     return { status: 'ok', ts: new Date().toISOString() };
   }
@@ -52,6 +55,11 @@ class HealthController {
    */
   @Public()
   @Get('ready')
+  @ApiOperation({
+    summary:
+      'Readiness — DB reachable + provider configured. 503 when the DB is ' +
+      'down; provider health is not live-checked (LB poll cost).',
+  })
   async ready() {
     const providerConfigured = !!this.config.get<string>('tatum.apiKey');
     try {
