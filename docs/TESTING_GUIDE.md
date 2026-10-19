@@ -179,8 +179,8 @@ notification to your `webhookUrl`.
 2. Send testnet funds to it (faucet / another wallet). For SOL, attach the
    `memo` — without it the deposit lands in the unattributed queue
 3. Watch `GET /transactions?externalUserId=...` or your webhook receiver for:
-   - `deposit.detected` — seen on-chain, confirming
-   - `deposit.confirmed` — final, ledger credited, `balance` updated
+   - `deposit.confirmed` — ledger credited, `balance` updated, **still reversible**
+   - `deposit.finalized` — **terminal**: past the reorg horizon, safe to let the user spend
 
 Poll status yourself:
 
@@ -190,7 +190,7 @@ curl "$BASE/transactions?externalUserId=user_1001&direction=inbound" \
 ```
 
 Each row carries `txid`, `confirmations` vs `requiredConfirmations`, `status`
-(`pending → confirmed`), and `address`.
+(`pending → confirmed → finalized`), and `address`.
 
 ---
 
@@ -260,7 +260,7 @@ over-threshold amounts.
 |---|---|
 | `page`, `limit` | Pagination (limit ≤ 100, default 20) |
 | `direction` | `inbound` deposits / `outbound` withdrawals |
-| `status` | `pending, confirmed, failed, reorged, requires_approval, rejected` |
+| `status` | `pending, confirmed, finalized, failed, reorged, requires_approval, rejected` |
 | `chain`, `asset` | `TRON` catches TRX+USDT_TRON; `asset` is exact |
 | `externalUserId` | One user's history |
 | `reference`, `txid` | Look up by your ref or the chain hash |
@@ -284,8 +284,10 @@ your `webhookSecret` (`x-bitlily-signature`, `x-bitlily-timestamp` headers —
 
 | Event | Fires when |
 |---|---|
-| `deposit.confirmed` | Required confirmations reached — **safe to credit the user** (no earlier "detected" event exists; first sight IS confirmed) |
-| `deposit.reorged` | A confirmed deposit lost confirmations — reverse your credit |
+| `deposit.pending` | Seen on-chain below required confs (webhook-path deposits) — informational, do NOT credit |
+| `deposit.confirmed` | Required confirmations reached — credited on our ledger, **still reversible** inside the reorg window |
+| `deposit.finalized` | **Terminal — safe to let the user spend** — exited the reorg-verification horizon; can never reverse |
+| `deposit.reorged` | A confirmed (never finalized) deposit lost confirmations — reverse your credit |
 | `deposit.unattributed` | Real funds on a shared address, memo matched no wallet — ops queue, never auto-credited |
 | `withdrawal.requires_approval` | Over the approval threshold — parked until admin decision |
 | `withdrawal.pending_signature` | Handed to the KMS signer |

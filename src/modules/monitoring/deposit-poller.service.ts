@@ -560,7 +560,16 @@ export class DepositPollerService {
     });
     for (const t of candidates) {
       if (!t.txid || t.txid.includes(':')) continue; // synthetic — unverifiable
-      if ((t.confirmations ?? 0) >= finality) continue; // past reorg horizon
+      if ((t.confirmations ?? 0) >= finality) {
+        // Past the reorg horizon — flip confirmed → finalized ONCE and tell
+        // the consumer their credit is terminal. The status filter on the
+        // candidates query means a finalized row is never re-examined:
+        // finalization is irreversible by construction.
+        await this.txs.update(t.id, { status: 'finalized' });
+        t.status = 'finalized';
+        await this.notifier.notify('deposit.finalized', t);
+        continue;
+      }
 
       // Distinguish "vanished" (provider returned null = 404) from
       // "unreachable" (threw). A provider outage must NOT reverse real
@@ -579,6 +588,15 @@ export class DepositPollerService {
           const head = await this.provider.getLatestBlock(dep.chain as any);
           if (head > 0) chainTx.confirmations = Math.max(0, head - chainTx.blockNumber + 1);
         } catch { /* keep reported value */ }
+      }
+      if (chainTx && (chainTx.confirmations ?? 0) >= finality) {
+        await this.txs.update(t.id, {
+          status: 'finalized',
+          confirmations: chainTx.confirmations,
+        });
+        t.status = 'finalized';
+        await this.notifier.notify('deposit.finalized', t);
+        continue;
       }
       if (chainTx && (chainTx.confirmations ?? 0) >= req) {
         if ((chainTx.confirmations ?? 0) !== t.confirmations) {

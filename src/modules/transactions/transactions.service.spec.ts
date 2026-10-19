@@ -630,7 +630,7 @@ describe('TransactionsService.creditUnattributedDeposit', () => {
 
     await expect(
       service.creditUnattributedDeposit('tx-u', 'acme', 'user-1'),
-    ).rejects.toThrow(/only confirmed deposits/);
+    ).rejects.toThrow(/only confirmed\/finalized deposits/);
     expect(ledger.postEntry).not.toHaveBeenCalled();
   });
 

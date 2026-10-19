@@ -63,8 +63,10 @@ Every event is a JSON POST:
 
 | Event | Meaning |
 |---|---|
-| \`deposit.confirmed\` | Hit the required confirmations. **The only "safe to credit" signal.** |
-| \`deposit.reorged\` | A confirmed deposit got dropped by a chain reorg. Reverse any credit you applied. |
+| \`deposit.pending\` | Seen on-chain below required confirmations (webhook-detected deposits). Informational — show "confirming", do NOT credit. |
+| \`deposit.confirmed\` | Hit the required confirmations — credited on our ledger, but still reversible inside the reorg window. Show as deposited; gating spend on it is your risk call. |
+| \`deposit.finalized\` | **The terminal, safe-to-spend signal** — exited the reorg-verification horizon; the service can never reverse it after this. |
+| \`deposit.reorged\` | A confirmed (not finalized) deposit got dropped by a chain reorg — reverse any credit you applied. Only arrives between confirmed and finalized. |
 | \`deposit.unattributed\` | Real funds on a shared address whose memo matched no wallet — ops queue, never auto-credited. |
 | \`withdrawal.requires_approval\` | Over your approval threshold — held until admin approve/reject. |
 | \`withdrawal.pending_signature\` | Queued on the KMS signer. |
@@ -78,12 +80,13 @@ Every event is a JSON POST:
 | \`sweep.failed\` | Consolidating a deposit failed repeatedly — ops alert. |
 | \`reconciliation.divergence\` | Ledger and chain disagree — ops alert. |
 
-The two events that matter for your users: \`deposit.confirmed\` (money in,
-credit them) and \`withdrawal.confirmed\` (money out, mark settled). Everything
-else is either intermediate or an ops alert. Deposits do NOT emit a "seen,
-unconfirmed" event — the poller/webhook only reports once attribution and
-confirmation thresholds are met, so first sight for a deposit is
-\`deposit.confirmed\` (or \`deposit.unattributed\` for ops).
+The events that matter for your users: \`deposit.finalized\` (money in and
+irreversible — spendable) and \`withdrawal.confirmed\` (money out, settled).
+\`deposit.confirmed\` is the earlier, faster signal: fine for showing "deposit
+received" and fine to credit for amounts where you accept residual reorg risk —
+but if a user must be able to spend the funds immediately, gate on
+\`deposit.finalized\`. A \`deposit.reorged\` can only ever arrive between the
+two. Everything else is intermediate or an ops alert.
 
 ## Verify it's really us — required, not optional
 
@@ -128,9 +131,10 @@ backfill from.
    \`memoRequired: true\`, which the sender MUST attach).
 2. Show the user the chain's deposit address (and memo when required).
 3. User sends crypto to that address.
-4. Confirmations hit → we POST \`deposit.confirmed\` → you credit the user.
-   A memo-less send to a shared address lands in \`deposit.unattributed\`
-   for ops — never auto-credited.
+4. \`deposit.pending\` (if seen below confirmations) → \`deposit.confirmed\`
+   (credited on our ledger) → \`deposit.finalized\` (irreversible — let them
+   spend). A memo-less send to a shared address lands in
+   \`deposit.unattributed\` for ops — never auto-credited.
 5. For payouts you call \`POST /withdrawals\` → we POST
    \`withdrawal.broadcast\` then \`withdrawal.confirmed\` (or
    \`withdrawal.failed\` with the debit reversed).

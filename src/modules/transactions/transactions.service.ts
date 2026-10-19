@@ -126,9 +126,9 @@ export class TransactionsService {
       if (!(t.raw as any)?.unattributed) {
         throw new BadRequestException('Deposit is not flagged unattributed');
       }
-      if (t.status !== 'confirmed') {
+      if (t.status !== 'confirmed' && t.status !== 'finalized') {
         throw new BadRequestException(
-          `Deposit status is ${t.status} — only confirmed deposits can be credited`,
+          `Deposit status is ${t.status} — only confirmed/finalized deposits can be credited`,
         );
       }
       t.wallet = wallet;

@@ -15,6 +15,10 @@ export type TxDirection = 'inbound' | 'outbound';
 export type TxStatus =
   | 'pending'
   | 'confirmed'
+  // Inbound only: crossed the reorg-verification horizon — the reversal
+  // path never examines it again. The consumer-safe "credit is final"
+  // signal; 'confirmed' means credited-but-still-reversible.
+  | 'finalized'
   | 'failed'
   | 'reorged'
   | 'requires_approval'

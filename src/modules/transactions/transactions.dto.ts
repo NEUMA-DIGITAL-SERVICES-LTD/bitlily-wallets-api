@@ -54,7 +54,7 @@ export class SendTransactionDto {
 
 const TX_DIRECTIONS = ['inbound', 'outbound'] as const;
 const TX_STATUSES = [
-  'pending', 'confirmed', 'failed', 'reorged', 'requires_approval', 'rejected',
+  'pending', 'confirmed', 'finalized', 'failed', 'reorged', 'requires_approval', 'rejected',
 ] as const;
 
 /** Query filters for GET /transactions — the app-wide, tenant-scoped feed. */

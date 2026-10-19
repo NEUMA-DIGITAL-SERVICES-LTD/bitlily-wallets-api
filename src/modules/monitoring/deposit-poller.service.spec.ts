@@ -249,6 +249,33 @@ describe('DepositPollerService', () => {
     expect(m.create.mock.calls.filter((c: any[]) => c[0] === Transaction)).toHaveLength(0);
   });
 
+  it('finalizes a confirmed deposit past the reorg horizon — terminal, emits deposit.finalized', async () => {
+    const creditedDep = { ...dep, creditedAmount: '0.50000000' };
+    addresses.find.mockResolvedValue([creditedDep]);
+    const confirmedTx = {
+      id: 'tx1', wallet, txid: 'realtxid', address: 'addr-1', asset: 'BTC',
+      amount: '0.50000000', status: 'confirmed', confirmations: 7, // BTC finality = max(2*3,6) = 6
+      direction: 'inbound', createdAt: new Date(),
+    } as unknown as Transaction;
+    txs.find.mockResolvedValue([confirmedTx]);
+    provider.getAddressBalance.mockResolvedValue('0.50000000'); // no delta
+    m.findOne.mockImplementation((e: any) =>
+      e === DepositAddress ? { ...creditedDep } : null);
+
+    await service.poll();
+
+    expect(txs.update).toHaveBeenCalledWith('tx1', { status: 'finalized' });
+    expect(confirmedTx.status).toBe('finalized'); // stamped before notify
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.finalized', confirmedTx);
+    // Stored confirmations already placed it past the horizon — no chain call needed
+    expect(provider.getTransaction).not.toHaveBeenCalled();
+    // And it can never reverse: no reversal entry, ever
+    expect(ledger.postEntry).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(),
+      'deposit_reversal', expect.anything(), 'debit',
+    );
+  });
+
   it('rebaselines creditedAmount when the balance dropped (funds swept out)', async () => {
     const creditedDep = { ...dep, creditedAmount: '0.50000000' };
     addresses.find.mockResolvedValue([creditedDep]);
