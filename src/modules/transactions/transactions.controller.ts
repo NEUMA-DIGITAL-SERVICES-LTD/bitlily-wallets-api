@@ -42,7 +42,14 @@ export class WithdrawalsController {
       'enforceBalance=false (your backend then owns solvency checks — ' +
       'e.g. fiat-funded withdrawals).',
   })
-  @ApiCreatedResponse({ type: TransactionViewDto })
+  @ApiCreatedResponse({
+    type: TransactionViewDto,
+    description:
+      'Send created — check `status`: `pending`/`pending_signature` means ' +
+      'broadcasting; `requires_approval` means the amount crossed the ' +
+      'configured approval threshold — the debit already posted but nothing ' +
+      'broadcasts until an admin approves or rejects it.',
+  })
   @ApiBadRequestResponse({
     type: ErrorResponseDto,
     description: 'Malformed address/amount, over-limit, or insufficient balance (enforce tenants)',

@@ -222,8 +222,9 @@ the actual chain fee once the tx is sighted on-chain.
 1. Asset + destination + amount validated (400s before anything writes)
 2. Wallet resolved by `(externalUserId, your appId)` — 404 if never created
 3. `reference` dupe check → 409 on collision
-4. Withdrawal limits → over `maxPerTx` = 400; over `approvalAbove` →
-   `requires_approval` (parked, no broadcast until admin approval — §7)
+4. Withdrawal limits → over `WITHDRAWAL_LIMITS[asset]` = 400; at/above
+   `WITHDRAWAL_APPROVAL_ABOVE[asset]` → `requires_approval` (parked, no
+   broadcast until admin approval — §7). `"*"` is a wildcard for both maps.
 5. Ledger debit + `pending` tx row written **atomically**
 6. **Treasury coverage pre-check** — if the chain treasury can't cover
    amount+fee → 503, debit reversed, tx marked `failed`
@@ -343,9 +344,19 @@ Ops tooling — not for app users. All under `/api/v1/admin`.
 `GET /api/v1/kms/verify/{requestId}` (admin) — inspect a pending KMS signing
 request (hang diagnostics).
 
-**Approval-flow test:** set `WITHDRAWAL_APPROVAL_ABOVE={"TRX":"1"}` → send 5
-TRX → tx parks as `requires_approval`, ledger already debited →
-`POST /admin/withdrawals/{id}/approve` broadcasts it, or `/reject` reverses.
+**Approval-flow test:** with the configured thresholds (TRX parks at ≥15,000),
+a send at/above the threshold returns `status: "requires_approval"` — debit
+posted, nothing broadcast → `POST /admin/withdrawals/{id}/approve`
+broadcasts it, or `/reject` reverses the debit. To exercise the flow cheaply,
+temporarily set `WITHDRAWAL_APPROVAL_ABOVE={"TRX":"1"}` and restart — a 5-TRX
+send then parks without needing a 15k test wallet.
+
+**Hard-cap test:** any send over `WITHDRAWAL_LIMITS[asset]` is rejected `400`
+before the wallet is even debited — verified live:
+`POST /withdrawals` with 200,000 TRX → `400 "exceeds per-transaction limit
+150000"`, and `GET /transactions?reference=<ref>` returns zero rows. Kill-switch:
+`WITHDRAWAL_LIMITS={"*":"0"}` rejects every withdrawal regardless of asset —
+restart required (config loads at boot).
 
 ---
 
