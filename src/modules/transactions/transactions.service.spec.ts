@@ -32,6 +32,7 @@ describe('TransactionsService.send', () => {
   let dataSource: any;
   let m: any;
   let walletOps: any;
+  let config: any;
 
   beforeEach(() => {
     m = {
@@ -56,9 +57,10 @@ describe('TransactionsService.send', () => {
       }),
     };
     walletOps = { createWallet: jest.fn() };
+    config = { get: jest.fn().mockReturnValue({}) };
     service = new TransactionsService(
       txs, wallets, accounts, provider, ledger, notifier,
-      { get: jest.fn().mockReturnValue({}) } as any,
+      config,
       dataSource,
       walletOps,
     );
@@ -92,6 +94,40 @@ describe('TransactionsService.send', () => {
     ledger.getBalance.mockResolvedValue('0.005');
     await expect(service.send(dto, 'default')).rejects.toThrow(/Insufficient/);
     expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects over the per-asset hard cap before any debit', async () => {
+    config.get.mockReturnValue({ maxPerTx: { ETH: '0.005' }, approvalAbove: {} });
+    await expect(service.send(dto, 'default')).rejects.toThrow(/exceeds per-transaction limit/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('the "*" wildcard caps assets without an explicit entry — the kill-switch path', async () => {
+    config.get.mockReturnValue({ maxPerTx: { '*': '0' }, approvalAbove: {} });
+    await expect(service.send(dto, 'default')).rejects.toThrow(/exceeds per-transaction limit/);
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('an explicit per-asset cap overrides the wildcard', async () => {
+    config.get.mockReturnValue({ maxPerTx: { ETH: '1', '*': '0' }, approvalAbove: {} });
+    provider.sendTransaction.mockResolvedValue({ txid: '0xreal' });
+    const tx = await service.send(dto, 'default');
+    expect(tx.txid).toBe('0xreal');
+  });
+
+  it('parks sends at/above the approval threshold — debit posts, no broadcast, requires_approval emitted', async () => {
+    config.get.mockReturnValue({ maxPerTx: {}, approvalAbove: { ETH: '0.01' } });
+
+    const tx = await service.send(dto, 'default');
+
+    const created = m.create.mock.calls.find((c: any[]) => c[0] === Transaction)?.[1];
+    expect(created.status).toBe('requires_approval');
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, wallet, expect.anything(), 'withdrawal', '0.01', 'debit',
+    );
+    expect(provider.sendTransaction).not.toHaveBeenCalled();
+    expect(notifier.notify).toHaveBeenCalledWith('withdrawal.requires_approval', tx);
   });
 
   it('stamps the request-time fee estimate on the row — the app shows it without a second call', async () => {

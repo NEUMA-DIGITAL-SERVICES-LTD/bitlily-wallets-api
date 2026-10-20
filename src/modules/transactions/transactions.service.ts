@@ -238,15 +238,15 @@ export class TransactionsService {
 
     // Withdrawal policy — circuit breakers, applied before any debit.
     const limits = this.config.get('limits') ?? { maxPerTx: {}, approvalAbove: {} };
-    const max = limits.maxPerTx?.[asset.code];
-    if (max && amount > parseFloat(max)) {
+    const max = limits.maxPerTx?.[asset.code] ?? limits.maxPerTx?.['*'];
+    if (max !== undefined && max !== null && amount > parseFloat(max)) {
       throw new BadRequestException(
         `Amount ${dto.amount} ${asset.code} exceeds per-transaction limit ${max}`,
       );
     }
     const needsApproval = (() => {
-      const thr = limits.approvalAbove?.[asset.code];
-      return thr ? amount >= parseFloat(thr) : false;
+      const thr = limits.approvalAbove?.[asset.code] ?? limits.approvalAbove?.['*'];
+      return thr !== undefined && thr !== null && amount >= parseFloat(thr);
     })();
 
     // Stamp the network fee estimate AT REQUEST TIME — the app can show
