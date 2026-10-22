@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -60,7 +61,12 @@ export class SweepService {
   async sweepAddress(
     depositAddressId: string,
     opts?: { maxAmount?: string },
-  ): Promise<{ txids: string[]; pendingKms?: string[]; amount?: string }> {
+  ): Promise<{
+    txids: string[];
+    pendingKms?: string[];
+    amount?: string;
+    gasTopUp?: { toAddress: string; asset: string; amount: string; reason: string };
+  }> {
     if (this.config.get('tatum.useKms') !== true) {
       throw new BadRequestException(
         'Sweeps require KMS signing — deposit addresses have no local keys. ' +
@@ -135,7 +141,7 @@ export class SweepService {
       if (pumped) {
         // Gas top-up was just sent — it must confirm on-chain before the
         // token can move. Return now; call sweep again once it lands.
-        return { txids, pendingKms };
+        return { txids, pendingKms, gasTopUp: pumped };
       }
     }
 
@@ -182,7 +188,7 @@ export class SweepService {
     token: AssetDef,
     custody: CustodyAccount,
     record: (r: { txid?: string; kmsRequestId?: string }) => void,
-  ): Promise<boolean> {
+  ): Promise<{ toAddress: string; asset: string; amount: string; reason: string } | null> {
     // getAsset keys on asset CODE not chain name — 'POLYGON' isn't an
     // asset code (native code is 'POL'), so this lookup must map.
     const NATIVE_CODE: Record<string, string> = {
@@ -197,24 +203,44 @@ export class SweepService {
     // Conservative default: a 100k-gas token transfer at ~50 gwei ≈ 0.005
     // native — enough headroom for testnet/mainnet variance; tune per chain.
     const needed = this.config.get<number>('sweep.gasTopUp') ?? 0.005;
-    if (nativeBal >= needed) return false;
+    if (nativeBal >= needed) return null;
     const topUp = (needed - nativeBal).toFixed(nativeAsset.decimals);
-    const r = await this.provider.sendTransaction({
-      asset: nativeAsset,
-      fromAccountId: dep.account.id,
-      signatureId: custody.secretRef,
-      derivationIndex: 0, // custody wallet's own address pays the gas
-      // Account-model chains (SOL) name the sender explicitly — the
-      // treasury/base address, which is custody index 0.
-      sourceAddress: custody.treasuryAddress ?? custody.baseAddress ?? undefined,
-      toAddress: dep.address,
-      amount: topUp,
-      reference: `gas-pump:${dep.id}`,
-    });
+    let r: { txid?: string; kmsRequestId?: string };
+    try {
+      r = await this.provider.sendTransaction({
+        asset: nativeAsset,
+        fromAccountId: dep.account.id,
+        signatureId: custody.secretRef,
+        derivationIndex: 0, // custody wallet's own address pays the gas
+        // Account-model chains (SOL) name the sender explicitly — the
+        // treasury/base address, which is custody index 0.
+        sourceAddress: custody.treasuryAddress ?? custody.baseAddress ?? undefined,
+        toAddress: dep.address,
+        amount: topUp,
+        reference: `gas-pump:${dep.id}`,
+      });
+    } catch (e) {
+      // The address needs gas it doesn't have AND the treasury couldn't
+      // top it up — name the remediation, not just the failure.
+      throw new ServiceUnavailableException(
+        `Deposit address ${dep.address} holds ${nativeBal} ${nativeAsset.code} ` +
+        `— below the ~${needed} needed to sweep ${token.code}. The treasury ` +
+        `gas top-up failed (${errMsg(e)}). Fund the treasury ` +
+        `${nativeAsset.code} or the deposit address directly, then retry.`,
+      );
+    }
     record(r);
     await this.recordOutbound(dep, nativeAsset, topUp, dep.address, `gas-pump:${dep.id}`, r);
     this.logger.log(`Gas-pumped ${topUp} ${nativeAsset.code} → ${dep.address}`);
-    return true;
+    return {
+      toAddress: dep.address,
+      asset: nativeAsset.code,
+      amount: topUp,
+      reason:
+        `${dep.address} held ${nativeBal} ${nativeAsset.code} — below the ` +
+        `~${needed} needed for a ${token.code} transfer. Sweep defers until ` +
+        `the top-up confirms; then call again to move the token.`,
+    };
   }
 
   /**

@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
@@ -353,11 +354,17 @@ export class WalletsService {
           );
           return saved;
         }
-        // Pool exhausted — degrade to shared-address+memo so deposits keep
-        // working, and alert ops: the pool needs a seed run, not a code fix.
+        // Pool exhausted — FAIL, don't fall back. A shared+memo SOL row
+        // breaks the per-user-address contract every other chain offers
+        // (the user is shown an address that isn't theirs). 503 because
+        // it's transient: ops seeds the pool and provisioning resumes.
         this.logger.error(
-          'SOL address pool exhausted — falling back to shared baseAddress+memo. ' +
+          'SOL address pool exhausted — refusing wallet provisioning. ' +
           'Seed more addresses: scripts/sol-pool-seed.js → POST /admin/address-pool.',
+        );
+        throw new ServiceUnavailableException(
+          'SOL deposit addresses temporarily exhausted — ops has been ' +
+          'alerted; retry shortly.',
         );
       }
 

@@ -90,7 +90,9 @@ curl -X POST $BASE/wallets \
 
 **SOL address model — two modes.** With `SOL_UNIQUE_DEPOSITS=true` each wallet
 gets its *own permanent SOL address* (shown above): uniquely attributed, no
-memo needed, sweepable via its custody derivation index. With the flag off
+memo needed, swept by the pool row's own KMS signatureId. Pool exhaustion
+fails the wallet call 503 — it never silently issues a shared+memo row. With
+the flag off
 (the legacy default), SOL rows carry `"memo": "bl-…", "memoRequired": true` —
 a shared custody address where the memo is the only attribution; memo-less
 deposits land in the unattributed ops queue (§7).

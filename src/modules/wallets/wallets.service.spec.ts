@@ -94,8 +94,8 @@ describe('WalletsService.permanentAddresses', () => {
  * SOL_UNIQUE_DEPOSITS=true — pooled unique addresses. Each pool row IS a
  * keypair (its own signatureId — SOL has no index derivation); the dep row
  * carries derivationIndex=null and sweeps resolve the signatureId by
- * address. Exhaustion must degrade to the shared-address+memo row, not
- * fail wallet provisioning.
+ * address. Exhaustion fails loudly (503) — a shared+memo row would break
+ * the per-user-address contract every other chain offers.
  */
 describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', () => {
   const solAccount = {
@@ -179,23 +179,16 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
     expect(em.createQueryBuilder).not.toHaveBeenCalled();
   });
 
-  it('empty pool degrades to the shared baseAddress row instead of failing', async () => {
-    // The shared (account, baseAddress, asset) row exists in the reuse path
-    const sharedRow = {
-      id: 'dep-shared', account: solAccount, address: 'SoLbase111',
-      chain: 'SOL', asset: 'SOL', status: 'active', expiresAt: null,
-    };
+  it('empty pool fails loudly — never silently hands out a shared memo address', async () => {
     service = makeService(true, []);
-    em.findOne.mockImplementation(async (entity: any, opts: any) => {
+    em.findOne.mockImplementation(async (entity: any) => {
       if (entity === WalletAccount) return solAccount;
-      // Shared-path reuse queries by (account, asset); watch lookups carry
-      // address+asset — matching on asset alone keeps the fallback row.
-      if (entity === DepositAddress && opts?.where?.asset === 'SOL') return sharedRow;
       return null;
     });
-    const res = await service.generateDepositAddress('w1', 'default', 'SOL');
 
-    expect(res.address).toBe('SoLbase111');
+    await expect(
+      service.generateDepositAddress('w1', 'default', 'SOL'),
+    ).rejects.toThrow(/SOL deposit addresses temporarily exhausted/);
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('pool exhausted'));
   });
 });

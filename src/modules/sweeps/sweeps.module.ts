@@ -19,6 +19,20 @@ class SweepDto {
   depositAddressId: string;
 }
 
+class GasTopUpDto {
+  @ApiProperty({ description: 'Deposit address that lacked native gas' })
+  toAddress: string;
+
+  @ApiProperty({ description: 'Native asset sent, e.g. SOL, ETH' })
+  asset: string;
+
+  @ApiProperty({ description: 'Amount sent, decimal string' })
+  amount: string;
+
+  @ApiProperty({ description: 'Why the sweep deferred — the token cannot move until this top-up confirms' })
+  reason: string;
+}
+
 export class SweepResultDto {
   @ApiProperty({ type: [String], description: 'Broadcast txids — gas top-up (if any) plus the sweep itself' })
   txids: string[];
@@ -28,6 +42,14 @@ export class SweepResultDto {
 
   @ApiPropertyOptional({ description: 'Amount moved, decimal string' })
   amount?: string;
+
+  @ApiPropertyOptional({
+    type: GasTopUpDto,
+    description:
+      'Set when the sweep deferred for a gas top-up — the token did NOT ' +
+      'move yet. Call again once the top-up confirms on-chain.',
+  })
+  gasTopUp?: GasTopUpDto;
 }
 
 @ApiTags('admin')

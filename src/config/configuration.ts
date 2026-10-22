@@ -118,7 +118,8 @@ export const detectionConfig = registerAs('detection', () => ({
    * on the KMS host (scripts/sol-pool-seed.js → POST /admin/address-pool).
    * true  = each wallet gets its own permanent SOL address (no memo needed)
    * false = shared custody address + per-wallet memo attribution
-   * Pool exhaustion degrades to the shared+memo row and alerts ops —
+   * Pool exhaustion fails provisioning 503 and alerts ops — never falls
+   * back to shared+memo (that would break the per-user-address contract);
    * deposits keep working under the other attribution model.
    */
   solUniqueDeposits: process.env.SOL_UNIQUE_DEPOSITS === 'true',
