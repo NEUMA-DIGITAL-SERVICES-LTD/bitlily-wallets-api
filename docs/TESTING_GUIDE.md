@@ -342,9 +342,24 @@ Ops tooling — not for app users. All under `/api/v1/admin`.
 | `POST /withdrawals/{id}/reject` | path id | Refuse it — the debit reverses, user balance restored |
 | `GET /deposits/unattributed?chain=` | `chain` optional | Ops queue: real on-chain funds with no attribution (memo-less SOL deposits) |
 | `POST /deposits/{id}/credit` | `appId`, `externalUserId` | Manually credit an unattributed deposit — idempotent, 409 if already attributed |
+| `POST /sweep` | `depositAddressId` (UUID) | Consolidate a deposit address → treasury, KMS-signed. Token sweeps on gas-hungry chains (ERC-20, SPL) may need a native top-up first |
+| `POST /address-pool` | `entries[]: {signatureId, address}` | Bulk-seed pooled SOL deposit addresses — deduped per unique address |
+| `GET /address-pool/stats` | — | Pool health per chain (`free` vs `assigned`). Low `free` → reseed before SOL wallet provisioning starts failing 503 |
 
 `GET /api/v1/kms/verify/{requestId}` (admin) — inspect a pending KMS signing
 request (hang diagnostics).
+
+**Sweep responses, decoded.** `POST /admin/sweep` returns
+`{txids, pendingKms, amount?, gasTopUp?}`:
+
+- `amount` present → the token actually moved; `txids` includes the sweep
+- `gasTopUp` present → the sweep **deferred**: the address lacked native gas,
+  treasury sent a top-up (`gasTopUp.amount` of `gasTopUp.asset` →
+  `gasTopUp.toAddress`). The token has NOT moved — call again after the
+  top-up confirms.
+- `503` → the address needed gas AND the treasury top-up failed — the error
+  names the remediation: fund the treasury's native coin (or the deposit
+  address directly), then retry.
 
 **Approval-flow test:** with the configured thresholds (TRX parks at ≥15,000),
 a send at/above the threshold returns `status: "requires_approval"` — debit
