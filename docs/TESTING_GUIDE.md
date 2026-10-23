@@ -337,6 +337,12 @@ Swagger shows only the client-self-serve subset (clients, approvals, deposit
 recovery, watch). Infra routes — `custody`, `address-pool`, `sweep` — work
 but are hidden from the spec; this table is their reference.
 
+`ADMIN_ALLOWED_IPS` caveats: `req.ip` is the socket peer unless
+`TRUST_PROXY_HOPS` matches the real ingress hops. Behind a tunnel/relay whose
+agent runs on this host, every remote caller shares the same (whitelisted)
+peer IP — the gate can't distinguish them. And `.env` edits require
+`docker compose up -d --force-recreate api`; `restart` reuses baked env.
+
 | Endpoint | Params | Purpose |
 |---|---|---|
 | `GET /clients` | — | List tenants — `source: env` (edit `.env`, API-immutable) or `db` (PATCHable) + `enforceBalance` |
