@@ -3,6 +3,7 @@ import {
   ApiBadRequestResponse,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiExcludeController,
   ApiExcludeEndpoint,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -308,9 +309,10 @@ class EnrollCustodyDto {
  * without a row.
  */
 @ApiTags('admin')
-// Ops surface authenticates on the admin key alone — it's the stronger
-// credential (optionally IP-pinned); a tenant key adds friction, not
-// security. @Public skips the global ApiKeyGuard; AdminKeyGuard still runs.
+// Ops-only surface (custody bootstrap, tenant registration, sweeps,
+// approvals, recovery) — excluded from the client-facing spec. Endpoints
+// still work behind X-Admin-Key; TESTING_GUIDE §7 is the ops reference.
+@ApiExcludeController()
 @ApiSecurity({ 'x-admin-key': [] })
 @Public()
 @UseGuards(AdminKeyGuard)

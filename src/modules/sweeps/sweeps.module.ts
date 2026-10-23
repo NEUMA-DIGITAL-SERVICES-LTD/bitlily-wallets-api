@@ -1,5 +1,5 @@
 import { Body, Controller, Module, Post, UseGuards } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiExcludeController, ApiOkResponse, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { IsNotEmpty, IsUUID } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -54,6 +54,7 @@ export class SweepResultDto {
 }
 
 @ApiTags('admin')
+@ApiExcludeController()
 @ApiSecurity({ 'x-admin-key': [] })
 @Public()
 @UseGuards(AdminKeyGuard)
