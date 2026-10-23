@@ -8,6 +8,7 @@ import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { AddressPool } from '../../database/entities/address-pool.entity';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
+import { Public } from '../../common/api-key.guard';
 import { SweepService } from './sweep.service';
 import { SweepSchedulerService } from './sweep-scheduler.service';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -53,7 +54,8 @@ export class SweepResultDto {
 }
 
 @ApiTags('admin')
-@ApiSecurity({ 'x-api-key': [], 'x-admin-key': [] })
+@ApiSecurity({ 'x-admin-key': [] })
+@Public()
 @UseGuards(AdminKeyGuard)
 @Controller('api/v1/admin')
 export class SweepController {

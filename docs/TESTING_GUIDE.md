@@ -327,9 +327,11 @@ Payload `data` block:
 
 ---
 
-## 7. Admin / ops surface (`X-Admin-Key` + `X-API-Key`)
+## 7. Admin / ops surface (`X-Admin-Key` only)
 
-Ops tooling — not for app users. All under `/api/v1/admin`.
+Ops tooling — not for app users. All under `/api/v1/admin`. The admin key
+alone authenticates — no `X-API-Key` required (it's the stronger credential,
+optionally IP-pinned via `ADMIN_ALLOWED_IPS`).
 
 | Endpoint | Params | Purpose |
 |---|---|---|

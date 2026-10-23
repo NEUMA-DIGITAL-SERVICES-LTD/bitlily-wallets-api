@@ -21,6 +21,7 @@ import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { AddressPool } from '../../database/entities/address-pool.entity';
 import { TransactionsService } from '../transactions/transactions.service';
 import { AdminKeyGuard } from '../../common/admin-key.guard';
+import { Public } from '../../common/api-key.guard';
 import { ClientsService } from '../../common/clients.service';
 import { addressPayload } from '../../common/address-payload';
 import { Inject } from '@nestjs/common';
@@ -306,8 +307,11 @@ class EnrollCustodyDto {
  * without a row.
  */
 @ApiTags('admin')
-// One requirement object = AND: admin routes need both headers, not either.
-@ApiSecurity({ 'x-api-key': [], 'x-admin-key': [] })
+// Ops surface authenticates on the admin key alone — it's the stronger
+// credential (optionally IP-pinned); a tenant key adds friction, not
+// security. @Public skips the global ApiKeyGuard; AdminKeyGuard still runs.
+@ApiSecurity({ 'x-admin-key': [] })
+@Public()
 @UseGuards(AdminKeyGuard)
 @Controller('api/v1/admin')
 export class AdminController {
