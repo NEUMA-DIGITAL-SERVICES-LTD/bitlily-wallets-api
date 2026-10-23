@@ -338,7 +338,7 @@ optionally IP-pinned via `ADMIN_ALLOWED_IPS`).
 | `GET /clients` | — | List tenants — `source: env` (edit `.env`, API-immutable) or `db` (PATCHable) + `enforceBalance` |
 | `POST /clients` | `slug*` (`^[a-z0-9-]+$`), `name`, `webhookUrl`, `scopes`, `allowedIps` (CIDRs), `enforceBalance` | Register a tenant — **returns `apiKey` + `webhookSecret` exactly once** |
 | `PATCH /clients/{slug}` | `name`, `webhookUrl`, `scopes`, `allowedIps` (`[]` clears), `active` (false suspends), `enforceBalance`, `rotate` (new creds, old key dies) | Update a **db** client — env slugs 404 by design |
-| `GET /custody` / `POST /custody` | `chain`, `xpub`/`baseAddress`, `signatureId`, `kmsAddress` (pair proof), `treasuryAddress`, `rotate` | List / enroll KMS custody wallets — **once per chain** (bootstrap or rotation), then `POST /wallets` derives from it. The pair proof refuses mismatched key material |
+| `GET /custody` / `POST /custody` *(hidden from Swagger — ops bootstrap only)* | `chain`, `xpub`/`baseAddress`, `signatureId`, `kmsAddress` (pair proof), `treasuryAddress`, `rotate` | List / enroll KMS custody wallets — **once per chain** (bootstrap or rotation), then `POST /wallets` derives from it. The pair proof refuses mismatched key material |
 | `POST /wallets/{id}/watch` | `address`, `asset`, `expiresInMinutes` | Re-watch an address — late payments to expired addresses, wrong-asset sends |
 | `POST /withdrawals/{id}/approve` | path id | Broadcast a parked `requires_approval` withdrawal (treasury gate still applies) |
 | `POST /withdrawals/{id}/reject` | path id | Refuse it — the debit reverses, user balance restored |

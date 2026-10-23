@@ -3,6 +3,7 @@ import {
   ApiBadRequestResponse,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiExcludeEndpoint,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -348,7 +349,10 @@ export class AdminController {
     return { address: d.address, chain: d.chain, asset: d.asset, status: d.status, expiresAt: d.expiresAt };
   }
 
+  // Bootstrap ceremony — ops runs it once per chain on the KMS host, not
+  // something the integrating dev calls. Hidden from the client-facing docs.
   @Post('custody')
+  @ApiExcludeEndpoint()
   @ApiOperation({
     summary:
       'Bootstrap-only: enroll a KMS-managed wallet for a chain — once per ' +
@@ -420,6 +424,7 @@ export class AdminController {
   }
 
   @Get('custody')
+  @ApiExcludeEndpoint()
   @ApiOperation({ summary: 'List enrolled custody wallets per chain' })
   @ApiOkResponse({ type: [CustodyViewDto] })
   list() {
