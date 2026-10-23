@@ -351,8 +351,10 @@ export class AdminController {
   @Post('custody')
   @ApiOperation({
     summary:
-      'Enroll a KMS-managed wallet for a chain. One of `xpub` (HD chains) ' +
-      'or `baseAddress` (account-model chains like SOL) is required — both ' +
+      'Bootstrap-only: enroll a KMS-managed wallet for a chain — once per ' +
+      'chain (revisit only on key rotation or adding a chain), then every ' +
+      'POST /wallets derives from it. One of `xpub` (HD chains) or ' +
+      '`baseAddress` (account-model chains like SOL) is required — both ' +
       'absent → 400. `kmsAddress` is the pair proof: output of `tatum-kms ' +
       'getaddress {signatureId} 0`, verified against the submitted ' +
       'xpub/baseAddress — a signatureId from a different wallet is refused.',
