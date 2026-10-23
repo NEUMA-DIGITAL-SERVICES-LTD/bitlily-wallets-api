@@ -333,6 +333,10 @@ Ops tooling — not for app users. All under `/api/v1/admin`. The admin key
 alone authenticates — no `X-API-Key` required (it's the stronger credential,
 optionally IP-pinned via `ADMIN_ALLOWED_IPS`).
 
+Swagger shows only the client-self-serve subset (clients, approvals, deposit
+recovery, watch). Infra routes — `custody`, `address-pool`, `sweep` — work
+but are hidden from the spec; this table is their reference.
+
 | Endpoint | Params | Purpose |
 |---|---|---|
 | `GET /clients` | — | List tenants — `source: env` (edit `.env`, API-immutable) or `db` (PATCHable) + `enforceBalance` |

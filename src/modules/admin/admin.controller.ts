@@ -3,7 +3,6 @@ import {
   ApiBadRequestResponse,
   ApiConflictResponse,
   ApiCreatedResponse,
-  ApiExcludeController,
   ApiExcludeEndpoint,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -309,10 +308,9 @@ class EnrollCustodyDto {
  * without a row.
  */
 @ApiTags('admin')
-// Ops-only surface (custody bootstrap, tenant registration, sweeps,
-// approvals, recovery) — excluded from the client-facing spec. Endpoints
-// still work behind X-Admin-Key; TESTING_GUIDE §7 is the ops reference.
-@ApiExcludeController()
+// Dev-facing ops: tenant self-service, withdrawal approvals, deposit
+// recovery. Infra-only routes (custody, address-pool) carry
+// @ApiExcludeEndpoint — hidden from the client-facing spec.
 @ApiSecurity({ 'x-admin-key': [] })
 @Public()
 @UseGuards(AdminKeyGuard)
@@ -439,6 +437,7 @@ export class AdminController {
    * never leaves it) — this endpoint only records the results.
    */
   @Post('address-pool')
+  @ApiExcludeEndpoint() // infra-only — pool seeding happens on the KMS host
   @ApiOperation({
     summary:
       'Import pre-minted deposit addresses (SOL: ed25519 has no xpub — ' +
@@ -467,6 +466,7 @@ export class AdminController {
   }
 
   @Get('address-pool/stats')
+  @ApiExcludeEndpoint() // infra-only
   @ApiOperation({
     summary:
       'Pool health per chain — free vs assigned counts. Low `free` = run ' +
