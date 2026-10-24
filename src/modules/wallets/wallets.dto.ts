@@ -127,8 +127,10 @@ export class WatchAddressDto {
   asset: string;
 
   @ApiPropertyOptional({
-    description: 'Minutes until the watch expires again. Omit for default TTL.',
-    default: 60,
+    description:
+      'Minutes until the watch expires again. Omit → permanent ' +
+      '(recommended — a recovery watch that expires re-hides the deposit ' +
+      'it was created to catch).',
   })
   @IsInt()
   @Min(1)

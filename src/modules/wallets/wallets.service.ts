@@ -590,6 +590,11 @@ export class WalletsService {
    * expired addresses and wrong-asset sends predating auto-watch.
    * Restricted to addresses that already belong to this wallet: watching
    * arbitrary foreign addresses would credit funds we cannot sweep.
+   *
+   * Watch rows are PERMANENT by default — a recovery row that silently
+   * expires re-hides the very deposit it was created to catch. Pass
+   * `expiresInMinutes` explicitly for a bounded watch window (rare —
+   * e.g. a one-off compliance probe).
    */
   async watchAddress(
     walletId: string,
@@ -601,8 +606,9 @@ export class WalletsService {
     const asset = getAsset(assetCode);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
 
-    const ttl = expiresInMinutes ?? this.config.get<number>('detection.addressTtlMinutes');
-    const expiresAt = ttl ? new Date(Date.now() + ttl * 60_000) : null;
+    const expiresAt = expiresInMinutes
+      ? new Date(Date.now() + expiresInMinutes * 60_000)
+      : null;
 
     return this.dataSource.transaction(async (em) => {
       const row = await em.findOne(DepositAddress, {
