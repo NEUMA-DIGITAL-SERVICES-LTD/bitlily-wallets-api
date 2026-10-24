@@ -611,7 +611,14 @@ export class TransactionsService {
     // the real source address to count inputs.
     const custody = await this.dataSource.getRepository(CustodyAccount)
       .findOne({ where: { chain: asset.chain } });
-    return this.provider.estimateFee(asset, toAddress, amount, custody?.treasuryAddress);
+    try {
+      return await this.provider.estimateFee(asset, toAddress, amount, custody?.treasuryAddress);
+    } catch (e) {
+      if (e instanceof HttpException) throw e;
+      // Provider failures are curated messages ('no fee strategy for X',
+      // 'estimation unavailable') — safe and actionable for the caller.
+      throw new BadGatewayException(`Fee estimate unavailable — ${errMsg(e)}`);
+    }
   }
 
   requiredConfirmations(chain: string): number {
