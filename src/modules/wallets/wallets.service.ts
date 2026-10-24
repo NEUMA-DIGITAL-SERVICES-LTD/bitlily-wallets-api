@@ -212,41 +212,39 @@ export class WalletsService {
     // rows all retired would otherwise show no SOL address forever.
     // Any shared rows still active stay as a memo-attributed catch-all;
     // they're only hidden below so clients see the per-user address.
-    if (this.config.get('detection.solUniqueDeposits')) {
-      let migrated = false;
-      const sharedAccounts = await this.accounts.find({
-        where: {
-          wallet: { id: walletId },
-          chain: 'SOL',
-          baseAddress: Not(IsNull()),
-        },
-      });
-      for (const a of sharedAccounts) {
-        migrated = (await this.migrateSharedSolAccount(a)) || migrated;
-      }
-      if (migrated) {
-        rows = await this.addresses.find({
-          where: {
-            account: { wallet: { id: walletId } },
-            expiresAt: IsNull(),
-            status: 'active',
-          },
-          relations: ['account'],
-          order: { createdAt: 'ASC' },
-        });
-      }
-      // Hide each shared-address group once its account has a pooled row —
-      // the pooled address is what clients should show/send to.
-      const pooledAccounts = new Set(
-        rows
-          .filter((r) => r.account?.baseAddress && r.address !== r.account.baseAddress)
-          .map((r) => r.account!.id),
-      );
-      rows = rows.filter(
-        (r) =>
-          r.address !== r.account?.baseAddress || !pooledAccounts.has(r.account!.id),
-      );
+    let migrated = false;
+    const sharedAccounts = await this.accounts.find({
+      where: {
+        wallet: { id: walletId },
+        chain: 'SOL',
+        baseAddress: Not(IsNull()),
+      },
+    });
+    for (const a of sharedAccounts) {
+      migrated = (await this.migrateSharedSolAccount(a)) || migrated;
     }
+    if (migrated) {
+      rows = await this.addresses.find({
+        where: {
+          account: { wallet: { id: walletId } },
+          expiresAt: IsNull(),
+          status: 'active',
+        },
+        relations: ['account'],
+        order: { createdAt: 'ASC' },
+      });
+    }
+    // Hide each shared-address group once its account has a pooled row —
+    // the pooled address is what clients should show/send to.
+    const pooledAccounts = new Set(
+      rows
+        .filter((r) => r.account?.baseAddress && r.address !== r.account.baseAddress)
+        .map((r) => r.account!.id),
+    );
+    rows = rows.filter(
+      (r) =>
+        r.address !== r.account?.baseAddress || !pooledAccounts.has(r.account!.id),
+    );
     const grouped = new Map<string, AddressGroup>();
     for (const r of rows) {
       // Backfill memos on shared-custody accounts that predate the memo
@@ -351,7 +349,7 @@ export class WalletsService {
       // whole keypairs minted on the KMS host into address_pool, one
       // signatureId each. The wallet's pooled address is permanent: sweeps
       // sign with the row's own signatureId; no memo needed.
-      if (asset.chain === 'SOL' && this.config.get('detection.solUniqueDeposits')) {
+      if (asset.chain === 'SOL') {
         const pooled = await this.allocatePoolAddress(em, account);
         if (pooled) {
           let row = await em.findOne(DepositAddress, {

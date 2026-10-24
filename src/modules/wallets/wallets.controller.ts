@@ -39,10 +39,10 @@ export class WalletsController {
       'Pass `ensure: ["TRX"]` to provision just those chains. Response ' +
       '`addresses` is always the wallet\'s full permanent set, one entry ' +
       'per address — same-chain assets list together under `assets`. ' +
-      'Shared-custody rows carry `memo` + `memoRequired: true` — deposits ' +
-      'must include that memo or they cannot be attributed. With ' +
-      'SOL_UNIQUE_DEPOSITS enabled, SOL rows are unique per wallet and ' +
-      'carry no memo fields.',
+      'SOL rows are unique per wallet (pooled keypairs) and carry no memo ' +
+      'fields. Any legacy shared-custody row still shows `memo` + ' +
+      '`memoRequired: true` until its account finishes migrating — ' +
+      'deposits there must include that memo.',
   })
   @ApiOkResponse({ type: WalletViewDto })
   create(@Body() dto: CreateWalletDto, @Req() req: any) {

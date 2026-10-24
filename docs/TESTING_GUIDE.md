@@ -88,23 +88,20 @@ curl -X POST $BASE/wallets \
 }
 ```
 
-**SOL address model — two modes.** With `SOL_UNIQUE_DEPOSITS=true` each wallet
-gets its *own permanent SOL address* (shown above): uniquely attributed, no
-memo needed, swept by the pool row's own KMS signatureId. Pool exhaustion
-fails the wallet call 503 — it never silently issues a shared+memo row. With
-the flag off
-(the legacy default), SOL rows carry `"memo": "bl-…", "memoRequired": true` —
-a shared custody address where the memo is the only attribution; memo-less
-deposits land in the unattributed ops queue (§7).
+**SOL address model — pooled unique, always.** Every wallet gets its *own
+permanent SOL address* (shown above): uniquely attributed, no memo needed,
+swept by the pool row's own KMS signatureId. Pool exhaustion fails the
+wallet call 503 — the shared-custody (memo) model is retired and there is
+no fallback.
 
-**Legacy shared→pooled migration.** Wallets created while the flag was off
-keep their shared+memo rows as an active catch-all (sends to the old address
-still credit by memo, or queue unattributed), but on the first wallet read
-under `SOL_UNIQUE_DEPOSITS=true` the account silently claims a pool address
-and mirrors its watch assets onto it — the response then shows ONLY the
-pooled address, no memo. Exhausted pool → the account stays shared+memo
-until reseeded. Tell users to update their saved deposit address after the
-migration; stragglers to the old address still resolve via the ops queue.
+**Legacy shared→pooled migration.** Wallets created under the old shared
+model keep a `baseAddress` marker on their SOL chain account; on the first
+wallet read the account claims a pool address and mirrors its watch assets
+onto it — the response then shows ONLY the pooled address, no memo.
+Exhausted pool → the account keeps whatever shared+memo rows remain until
+reseeded (detection of new sends to the retired shared address is off by
+design — strays sit in treasury and are recovered via explorer + manual
+credit). Tell users to update their saved deposit address after migration.
 
 ### `GET /api/v1/wallets/{externalUserId}` — wallet + balances + history
 

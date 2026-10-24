@@ -36,15 +36,29 @@ describe('WalletsService.permanentAddresses', () => {
   beforeEach(() => {
     m = {
       findOne: jest.fn().mockResolvedValue(null), // no memo collisions
+      exists: jest.fn().mockResolvedValue(false), // no pooled row yet
       save: jest.fn(async (o: any) => o),
     };
     addresses = { find: jest.fn().mockResolvedValue([...solRows, ethRow]) };
-    dataSource = { manager: m };
-    // Legacy shared+memo mode: solUniqueDeposits OFF so no migration runs.
-    const config = { get: jest.fn().mockReturnValue(false) };
+    // Migration now ALWAYS runs — shared+memo stays visible only when it
+    // cannot complete (empty pool → allocatePoolAddress returns null).
+    const em = {
+      findOne: jest.fn().mockResolvedValue(null), // no free pool row
+      findOneOrFail: jest.fn().mockResolvedValue(solAccount),
+      find: jest.fn().mockResolvedValue([]),
+      create: jest.fn((_e: any, v: any) => ({ status: 'active', ...v })),
+      save: jest.fn(async (o: any) => o),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnThis(), set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      }),
+    };
+    dataSource = { manager: m, transaction: jest.fn(async (cb: any) => cb(em)) };
+    const accounts = { find: jest.fn().mockResolvedValue([solAccount]) };
     service = new WalletsService(
-      {} as any, {} as any, {} as any, addresses, {} as any,
-      {} as any, {} as any, config as any, dataSource, {} as any,
+      {} as any, accounts as any, {} as any, addresses, {} as any,
+      {} as any, {} as any, {} as any, dataSource, {} as any,
     );
   });
 
@@ -93,7 +107,7 @@ describe('WalletsService.permanentAddresses', () => {
 });
 
 /**
- * SOL_UNIQUE_DEPOSITS=true — pooled unique addresses. Each pool row IS a
+ * SOL deposits are ALWAYS pooled unique addresses — each pool row IS a
  * keypair (its own signatureId — SOL has no index derivation); the dep row
  * carries derivationIndex=null and sweeps resolve the signatureId by
  * address. Exhaustion fails loudly (503) — a shared+memo row would break
@@ -119,7 +133,7 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
   let config: any;
   const log = { warn: jest.fn(), error: jest.fn(), log: jest.fn() };
 
-  const makeService = (uniqueOn: boolean, poolRows: any[]) => {
+  const makeService = (poolRows: any[]) => {
     saved = [];
     const qb = {
       update: jest.fn().mockReturnThis(),
@@ -144,9 +158,7 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
       save: jest.fn(async (o: any) => { saved.push(o); return o; }),
       createQueryBuilder: jest.fn().mockReturnValue(qb),
     };
-    config = {
-      get: jest.fn((k: string) => (k === 'detection.solUniqueDeposits' ? uniqueOn : undefined)),
-    };
+    config = { get: jest.fn().mockReturnValue(undefined) };
     const dataSource: any = { transaction: jest.fn(async (cb: any) => cb(em)), manager: em };
     const svc = new WalletsService(
       {} as any, {} as any, {} as any, {} as any, {} as any,
@@ -157,7 +169,7 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
   };
 
   it('assigns a pooled address with its derivation index — permanent, no memo', async () => {
-    service = makeService(true, [poolRow]);
+    service = makeService([poolRow]);
     const res = await service.generateDepositAddress('w1', 'default', 'SOL');
 
     expect(res.address).toBe('SoLpooled7');
@@ -173,7 +185,7 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
 
   it('reuses the wallet\'s already-assigned pool row', async () => {
     const assigned = { ...poolRow, account: solAccount, assignedAt: new Date() };
-    service = makeService(true, [assigned]);
+    service = makeService([assigned]);
     const res = await service.generateDepositAddress('w1', 'default', 'SOL');
 
     expect(res.address).toBe('SoLpooled7');
@@ -182,7 +194,7 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
   });
 
   it('empty pool fails loudly — never silently hands out a shared memo address', async () => {
-    service = makeService(true, []);
+    service = makeService([]);
     em.findOne.mockImplementation(async (entity: any) => {
       if (entity === WalletAccount) return solAccount;
       return null;
@@ -259,7 +271,7 @@ describe('WalletsService.permanentAddresses — shared→pooled migration', () =
       createQueryBuilder: jest.fn().mockReturnValue(qb),
     };
     const dataSource: any = { transaction: jest.fn(async (cb: any) => cb(em)), manager: em };
-    const config = { get: jest.fn((k: string) => (k === 'detection.solUniqueDeposits' ? true : undefined)) };
+    const config = { get: jest.fn().mockReturnValue(undefined) };
     const addresses = { find: jest.fn() };
     // Migration keys off the ACCOUNT's baseAddress marker — the mock
     // surfaces this wallet's shared-custody SOL account.

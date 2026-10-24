@@ -491,8 +491,8 @@ export class AdminController {
   @ApiOperation({
     summary:
       'Pool health per chain — free vs assigned counts. Low `free` = run ' +
-      'the pool seed script before SOL_UNIQUE_DEPOSITS wallet provisioning ' +
-      'starts failing 503 (no memo fallback by design).',
+      'the pool seed script before SOL wallet provisioning starts failing ' +
+      '503 (pooled addresses are the only SOL model; no memo fallback).',
   })
   @ApiOkResponse({ type: [PoolStatsDto] })
   async poolStats() {

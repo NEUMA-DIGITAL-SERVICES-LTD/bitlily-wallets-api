@@ -145,7 +145,8 @@ export const detectionConfig = registerAs('detection', () => ({
    * back to shared+memo (that would break the per-user-address contract);
    * deposits keep working under the other attribution model.
    */
-  solUniqueDeposits: process.env.SOL_UNIQUE_DEPOSITS === 'true',
+  // SOL deposits are ALWAYS pooled unique addresses — the shared-custody
+  // (baseAddress+memo) model is retired; there is no flag-off fallback.
   /** Ops warning threshold for free pooled SOL addresses. */
   solPoolLowWatermark: parseInt(process.env.SOL_POOL_LOW_WATERMARK ?? '20', 10),
 }));
