@@ -335,6 +335,10 @@ export class AdminController {
     summary:
       'OPS recovery — re-watch an address for an asset on any tenant wallet. ' +
       'Used for late payments to expired addresses and wrong-asset sends. ' +
+      'The watch row is PERMANENT by default (a recovery watch that expires ' +
+      're-hides the deposit it was created to catch); pass ' +
+      '`expiresInMinutes` only for a deliberately bounded watch window. ' +
+      'Permanent rows are never demoted to expirable. ' +
       'Moved out of the client surface: this is operator tooling.',
   })
   @ApiOkResponse({ type: WatchedAddressViewDto })
