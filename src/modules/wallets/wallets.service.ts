@@ -591,24 +591,18 @@ export class WalletsService {
    * Restricted to addresses that already belong to this wallet: watching
    * arbitrary foreign addresses would credit funds we cannot sweep.
    *
-   * Watch rows are PERMANENT by default — a recovery row that silently
-   * expires re-hides the very deposit it was created to catch. Pass
-   * `expiresInMinutes` explicitly for a bounded watch window (rare —
-   * e.g. a one-off compliance probe).
+   * Watch rows are ALWAYS permanent — a recovery watch that expires
+   * re-hides the very deposit it was created to catch. Reviving a
+   * legacy expirable row promotes it to permanent as well.
    */
   async watchAddress(
     walletId: string,
     appId: string,
     address: string,
     assetCode: string,
-    expiresInMinutes?: number,
   ): Promise<DepositAddress> {
     const asset = getAsset(assetCode);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
-
-    const expiresAt = expiresInMinutes
-      ? new Date(Date.now() + expiresInMinutes * 60_000)
-      : null;
 
     return this.dataSource.transaction(async (em) => {
       const row = await em.findOne(DepositAddress, {
@@ -617,9 +611,7 @@ export class WalletsService {
       });
       if (row) {
         row.status = 'active';
-        // Permanent rows stay permanent — /watch revives/extends expiring
-        // rows but must never demote a persistent address to expirable.
-        if (row.expiresAt !== null) row.expiresAt = expiresAt;
+        row.expiresAt = null; // revive = promote to permanent
         return em.save(row);
       }
       // No watch row for this asset — allowed only if the address is one of
@@ -641,7 +633,7 @@ export class WalletsService {
           asset: asset.code,
           derivationIndex: anyRow.derivationIndex,
           reference: anyRow.reference,
-          expiresAt,
+          expiresAt: null,
         }),
       );
     });

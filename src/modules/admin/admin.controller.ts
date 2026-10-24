@@ -335,10 +335,9 @@ export class AdminController {
     summary:
       'OPS recovery — re-watch an address for an asset on any tenant wallet. ' +
       'Used for late payments to expired addresses and wrong-asset sends. ' +
-      'The watch row is PERMANENT by default (a recovery watch that expires ' +
-      're-hides the deposit it was created to catch); pass ' +
-      '`expiresInMinutes` only for a deliberately bounded watch window. ' +
-      'Permanent rows are never demoted to expirable. ' +
+      'The watch row is ALWAYS permanent (expiresAt: null) — a recovery ' +
+      'watch that expired would re-hide the deposit it was created to ' +
+      'catch. Reviving a legacy expirable row promotes it to permanent. ' +
       'Moved out of the client surface: this is operator tooling.',
   })
   @ApiOkResponse({ type: WatchedAddressViewDto })
@@ -348,7 +347,7 @@ export class AdminController {
     const wallet = await this.wallets.findOne({ where: { id } });
     if (!wallet) throw new NotFoundException(`Wallet ${id} not found`);
     const d = await this.walletOps.watchAddress(
-      id, wallet.appId, dto.address, dto.asset, dto.expiresInMinutes,
+      id, wallet.appId, dto.address, dto.asset,
     );
     return { address: d.address, chain: d.chain, asset: d.asset, status: d.status, expiresAt: d.expiresAt };
   }
