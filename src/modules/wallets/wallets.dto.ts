@@ -128,12 +128,16 @@ export class WatchAddressDto {
 
   @ApiPropertyOptional({
     description:
-      'Minutes until the watch expires again. Omit → permanent ' +
-      '(recommended — a recovery watch that expires re-hides the deposit ' +
-      'it was created to catch).',
+      'Minutes until the watch expires again. OMIT THE FIELD for ' +
+      'permanent (recommended — a recovery watch that expires re-hides ' +
+      'the deposit it was created to catch). There is no 0 — the ' +
+      'field is the bounded-window opt-in, permanence is the absence.',
   })
   @IsInt()
-  @Min(1)
+  @Min(1, {
+    message:
+      'expiresInMinutes only sets a bounded watch window (min 1 minute) — omit the field entirely for a permanent watch',
+  })
   @Max(10080)
   @IsOptional()
   expiresInMinutes?: number;
