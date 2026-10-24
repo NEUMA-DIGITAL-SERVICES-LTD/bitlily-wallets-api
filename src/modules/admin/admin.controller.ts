@@ -49,7 +49,10 @@ class CreateClientDto {
   webhookUrl?: string;
 
   @ApiPropertyOptional({
-    description: '["wallet"] = full tenant access; ["read"] = shared endpoints only',
+    description:
+      'Key capabilities: ["wallet"] = full tenant access (DEFAULT when ' +
+      'omitted); ["read"] = shared/read endpoints only — wallet & ' +
+      'transaction routes return 403.',
   })
   @IsArray()
   @IsString({ each: true })
@@ -58,7 +61,8 @@ class CreateClientDto {
 
   @ApiPropertyOptional({
     description:
-      'CIDRs/IPs this key may be used from, e.g. ["203.0.113.0/24"]. ' +
+      'CIDRs this key may be used from, e.g. ["203.0.113.0/24"] — a ' +
+      'single host needs its explicit suffix ("203.0.113.10/32"). ' +
       'Omit/empty = unrestricted. A leaked key is dead outside this list.',
   })
   @IsArray()
@@ -89,7 +93,11 @@ class UpdateClientDto {
   @IsOptional()
   webhookUrl?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description:
+      '["wallet"] = full tenant access; ["read"] = shared/read ' +
+      'endpoints only. Omitted = leave unchanged.',
+  })
   @IsArray()
   @IsString({ each: true })
   @IsOptional()
@@ -97,8 +105,8 @@ class UpdateClientDto {
 
   @ApiPropertyOptional({
     description:
-      'CIDRs/IPs this key may be used from. [] clears the restriction. ' +
-      'Omitted = leave unchanged.',
+      'CIDRs this key may be used from (host → ".../32" or ".../128"). ' +
+      '[] clears the restriction. Omitted = leave unchanged.',
   })
   @IsArray()
   @IsString({ each: true })
