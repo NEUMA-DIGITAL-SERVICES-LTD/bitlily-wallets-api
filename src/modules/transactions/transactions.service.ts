@@ -54,36 +54,6 @@ export class TransactionsService {
   ) {}
 
   /**
-   * OPS: shared-custody deposits (SOL) whose memo resolved no wallet are
-   * recorded with wallet:NULL + raw.unattributed — the manual-review queue.
-   * Sanitized for ops display; provider blobs stay off this wire too.
-   */
-  async listUnattributedDeposits(chain?: string) {
-    const qb = this.txs
-      .createQueryBuilder('t')
-      .where('t.wallet_id IS NULL')
-      .andWhere(`t.direction = 'inbound'`)
-      .andWhere(`t.raw ->> 'unattributed' = 'true'`)
-      .orderBy('t.created_at', 'DESC')
-      .take(200);
-    if (chain) qb.andWhere('t.chain = :chain', { chain: chain.toUpperCase() });
-    return (await qb.getMany()).map((t) => ({
-      id: t.id,
-      chain: t.chain,
-      asset: t.asset,
-      txid: t.txid,
-      address: t.address,
-      amount: t.amount,
-      status: t.status,
-      confirmations: t.confirmations,
-      blockNumber: t.blockNumber,
-      memo: (t.raw as any)?.memo ?? null,
-      detectedVia: (t.raw as any)?.detectedVia ?? null,
-      createdAt: t.createdAt,
-    }));
-  }
-
-  /**
    * Outbound send/withdrawal.
    *
    * Order matters: the ledger debit is posted inside the same DB transaction

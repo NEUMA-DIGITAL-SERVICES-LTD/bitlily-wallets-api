@@ -297,7 +297,7 @@ your `webhookSecret` (`x-bitlily-signature`, `x-bitlily-timestamp` headers —
 | `deposit.confirmed` | Required confirmations reached — credited on our ledger, **still reversible** inside the reorg window |
 | `deposit.finalized` | **Terminal — safe to let the user spend** — exited the reorg-verification horizon; can never reverse |
 | `deposit.reorged` | A confirmed (never finalized) deposit lost confirmations — reverse your credit |
-| `deposit.unattributed` | Real funds on a shared address, memo matched no wallet — ops queue, never auto-credited |
+| `deposit.unattributed` | Real funds detected with no resolved wallet — flagged on the tx row + this alert event; never auto-credited (resolution is off-API accounting) |
 | `withdrawal.requires_approval` | Over the approval threshold — parked until admin decision |
 | `withdrawal.pending_signature` | Handed to the KMS signer |
 | `withdrawal.broadcast` | Send accepted on-chain; carries `txid` + estimated `fee` |
@@ -358,7 +358,6 @@ peer IP — the gate can't distinguish them. And `.env` edits require
 | `POST /wallets/{id}/watch` | `address`, `asset` | Re-watch an address — wrong-asset sends (e.g. USDT_TRON to a TRX address has no watch row → deposit invisible until watched); also reactivates retired rows. Watch rows are always permanent (`expiresAt: null`); revive promotes legacy expirable rows |
 | `POST /withdrawals/{id}/approve` | path id | Broadcast a parked `requires_approval` withdrawal (treasury gate still applies) |
 | `POST /withdrawals/{id}/reject` | path id | Refuse it — the debit reverses, user balance restored |
-| `GET /deposits/unattributed?chain=` | `chain` optional | Ops queue: real on-chain funds with no attribution — visibility only; no in-API credit path (deliberate off-API accounting) |
 | `POST /sweep` | `depositAddressId` (UUID) | Consolidate a deposit address → treasury, KMS-signed. Token sweeps on gas-hungry chains (ERC-20, SPL) may need a native top-up first |
 | `POST /address-pool` | `entries[]: {signatureId, address}` | Bulk-seed pooled SOL deposit addresses — deduped per unique address |
 | `GET /address-pool/stats` | — | Pool health per chain (`free` vs `assigned`). Low `free` → reseed before SOL wallet provisioning starts failing 503 |
@@ -433,8 +432,9 @@ curl "$BASE/transactions?reference=e2e-001" -H "X-API-Key: $API_KEY"
 - **`reference` discipline** is the single most important client-side rule:
   generate one per logical payout, reuse it across retries, never across
   different payouts
-- **Memo-less SOL deposits** don't disappear — they sit in
-  `/admin/deposits/unattributed` until ops credits them
+- **Unattributable deposits** fire `deposit.unattributed` — they sit in
+  treasury flagged on the tx row; resolution is deliberate off-API
+  accounting, never automatic
 - **Balance vs treasury**: user balance is ledger liability; the treasury
   coverage gate independently refuses sends the vault can't fund
 - **Negative balances** are possible under `enforceBalance=false` — they

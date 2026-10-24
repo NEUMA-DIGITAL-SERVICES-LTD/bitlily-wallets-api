@@ -274,10 +274,11 @@ wrong asset to a watched address, ops re-arms polling via
 `POST /admin/wallets/<walletId>/watch` (admin-gated). This is operator
 tooling — your app never calls it; raise it with ops when it happens.
 
-**Unattributed deposits:** `GET /admin/deposits/unattributed` lists
-verified on-chain funds that resolved no wallet (txid, amount, memo
-shown). There is no crediting endpoint — resolution is a deliberate
-off-API accounting action by ops after verifying the depositor.
+**Unattributed deposits:** if real on-chain funds resolve no wallet, the
+deposit is flagged and `deposit.unattributed` fires to your webhook —
+that event (txid, address, amount, memo) is the alert. Resolution is a
+deliberate off-API accounting action by ops after verifying the
+depositor; no endpoint lists or credits these.
 
 **Disaster-recovery note (ops):** deposit addresses derive from a
 monotonic per-chain index — the same wallet recreated in the same order

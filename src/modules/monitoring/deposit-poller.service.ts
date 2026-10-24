@@ -85,8 +85,8 @@ export class DepositPollerService {
    * so balance deltas can't attribute deposits — inbound txs are enumerated
    * and the sender's Memo program instruction resolves the wallet (the
    * exchange destination-tag model). Deposits with a missing/unknown memo
-   * are recorded unattributed (wallet: NULL) for the ops credit queue —
-   * funds are never guessed and never silently dropped.
+   * are recorded unattributed (wallet: NULL) — flagged + alerted via
+   * deposit.unattributed; funds are never guessed and never silently dropped.
    *
    * Dedupe is (txid, address, asset, direction) — the same signature is
    * processed once even across poll cycles or a webhook/poller overlap.

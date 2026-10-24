@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, BadRequestException, NotFoundException, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, BadRequestException, NotFoundException, UseGuards } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiConflictResponse,
@@ -7,7 +7,6 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
-  ApiQuery,
   ApiSecurity,
   ApiTags,
 } from '@nestjs/swagger';
@@ -191,21 +190,6 @@ export class ClientCredentialsDto {
   @ApiPropertyOptional({ nullable: true, type: [String] }) allowedIps?: string[] | null;
   @ApiProperty() enforceBalance: boolean;
   @ApiPropertyOptional() active?: boolean;
-}
-
-export class UnattributedDepositViewDto {
-  @ApiProperty() id: string;
-  @ApiProperty() chain: string;
-  @ApiProperty() asset: string;
-  @ApiProperty() txid: string;
-  @ApiProperty() address: string;
-  @ApiProperty() amount: string;
-  @ApiProperty() status: string;
-  @ApiProperty() confirmations: number;
-  @ApiPropertyOptional({ nullable: true }) blockNumber?: number | null;
-  @ApiPropertyOptional({ nullable: true, description: 'Memo carried by the deposit, if any' }) memo?: string | null;
-  @ApiPropertyOptional({ nullable: true }) detectedVia?: string | null;
-  @ApiProperty() createdAt: Date;
 }
 
 export class WatchedAddressViewDto {
@@ -573,19 +557,5 @@ export class AdminController {
   @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown or non-parked withdrawal' })
   reject(@Param('id') id: string) {
     return this.transactions.rejectWithdrawal(id).then((tx) => this.transactions.toView(tx));
-  }
-
-  @Get('deposits/unattributed')
-  @ApiOperation({
-    summary:
-      'OPS review queue — verified on-chain deposits that resolved no ' +
-      'wallet (legacy shared-custody memos, indexer-attribution gaps, ' +
-      'stale webhook subscriptions). Real funds flagged for ops review ' +
-      '— visibility only; crediting them is deliberate off-API accounting.',
-  })
-  @ApiQuery({ name: 'chain', required: false, description: 'Narrow to one chain (e.g. SOL)' })
-  @ApiOkResponse({ type: [UnattributedDepositViewDto] })
-  listUnattributed(@Query('chain') chain?: string) {
-    return this.transactions.listUnattributedDeposits(chain);
   }
 }

@@ -231,9 +231,11 @@ The provider isolates all of these; if Tatum changes an enum, grep
   errors), then scans each ATA's signatures and filters by mint locally.
 - Legacy shared-base inbounds attributed by the wallet's memo
   (`bl-xxxxxxxx`); the shared model is retired — stray sends to the old
-  address sit in treasury undetected. Wallet-less flagged rows surface on
-  `GET /api/v1/admin/deposits/unattributed` — **no credit endpoint exists**;
-  resolution is deliberate off-API accounting after verifying the depositor.
+  address sit in treasury undetected. Detected-but-unattributable funds
+  are flagged `raw.unattributed` and alert via the `deposit.unattributed`
+  webhook event — there is **no listing or credit endpoint**; resolution
+  is deliberate off-API accounting after verifying the depositor (query
+  `transactions WHERE wallet_id IS NULL AND raw->>'unattributed'='true'`).
   Never re-derive ownership from amount/timing — the code doesn't, don't
   do it manually either.
 - Outbound txs on the base (sweeps, ops sends) net ≤0 to the base and are

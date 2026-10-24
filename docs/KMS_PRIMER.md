@@ -63,7 +63,8 @@ ops lookups:
 - **Your users' balances** — that's this service's ledger, not Tatum's.
   Tatum knows addresses; it doesn't know your `externalUserId`s.
 - **Deposit attribution** — memos, pooled addresses, and the
-  `unattributed` ops queue are all service-side concepts.
+  `unattributed` flag/`deposit.unattributed` alert are all service-side
+  concepts.
 
 ## Handover inventory (what the client actually owns)
 

@@ -67,7 +67,7 @@ Every event is a JSON POST:
 | \`deposit.confirmed\` | Hit the required confirmations — credited on our ledger, but still reversible inside the reorg window. Show as deposited; gating spend on it is your risk call. |
 | \`deposit.finalized\` | **The terminal, safe-to-spend signal** — exited the reorg-verification horizon; the service can never reverse it after this. |
 | \`deposit.reorged\` | A confirmed (not finalized) deposit got dropped by a chain reorg — reverse any credit you applied. Only arrives between confirmed and finalized. |
-| \`deposit.unattributed\` | Real funds on a shared address whose memo matched no wallet — ops queue, never auto-credited. |
+| \`deposit.unattributed\` | Real funds detected but no wallet resolved (indexer-attribution gaps, legacy shared-address sends) — flagged for ops, never auto-credited. |
 | \`withdrawal.requires_approval\` | Over your approval threshold — held until admin approve/reject. |
 | \`withdrawal.pending_signature\` | Queued on the KMS signer. |
 | \`withdrawal.broadcast\` | On-chain now, \`txid\` attached. |
@@ -133,7 +133,7 @@ backfill from.
 3. User sends crypto to that address.
 4. \`deposit.pending\` (if seen below confirmations) → \`deposit.confirmed\`
    (credited on our ledger) → \`deposit.finalized\` (irreversible — let them
-   spend). A memo-less send to a shared address lands in
+   spend). Funds detected with no resolvable wallet fire
    \`deposit.unattributed\` for ops — never auto-credited.
 5. For payouts you call \`POST /withdrawals\` → we POST
    \`withdrawal.broadcast\` then \`withdrawal.confirmed\` (or
