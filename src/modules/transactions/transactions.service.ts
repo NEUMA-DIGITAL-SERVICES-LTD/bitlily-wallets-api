@@ -13,7 +13,6 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transaction } from '../../database/entities/transaction.entity';
-import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
@@ -82,85 +81,6 @@ export class TransactionsService {
       detectedVia: (t.raw as any)?.detectedVia ?? null,
       createdAt: t.createdAt,
     }));
-  }
-
-  /**
-   * OPS manual credit for an unattributed shared-custody deposit — the
-   * missing/wrong-memo recovery path. Attribution is explicit (admin picks
-   * appId + externalUserId), idempotent (already-attributed rows conflict),
-   * and auditable (raw.attribution records who credited whom, when).
-   * The ledger entry posts in the same DB transaction as the wallet
-   * assignment — a crash can't half-apply the credit.
-   */
-  async creditUnattributedDeposit(
-    txId: string,
-    appId: string,
-    externalUserId: string,
-  ): Promise<Transaction> {
-    const wallet = await this.wallets.findOne({
-      where: { externalUserId, appId },
-    });
-    if (!wallet) {
-      throw new NotFoundException(
-        `No wallet for externalUserId ${externalUserId} in app ${appId}`,
-      );
-    }
-    const tx = await this.dataSource.transaction(async (m) => {
-      // No join under FOR UPDATE — Postgres can't lock nullable outer-join
-      // sides. loadRelationIds gives the raw wallet_id for the attributed
-      // check; the entity itself gets assigned below.
-      const t = await m.findOne(Transaction, {
-        where: { id: txId },
-        loadRelationIds: true,
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!t) throw new NotFoundException(`Transaction ${txId} not found`);
-      if (t.direction !== 'inbound') {
-        throw new BadRequestException('Only inbound deposits can be manually credited');
-      }
-      if (t.wallet) {
-        throw new ConflictException(
-          'Deposit already attributed to a wallet — refusing to double-credit',
-        );
-      }
-      if (!(t.raw as any)?.unattributed) {
-        throw new BadRequestException('Deposit is not flagged unattributed');
-      }
-      if (t.status !== 'confirmed' && t.status !== 'finalized') {
-        throw new BadRequestException(
-          `Deposit status is ${t.status} — only confirmed/finalized deposits can be credited`,
-        );
-      }
-      t.wallet = wallet;
-      t.raw = {
-        ...t.raw,
-        unattributed: false,
-        attribution: {
-          by: 'admin',
-          appId,
-          externalUserId,
-          at: new Date().toISOString(),
-        },
-      };
-      await m.save(t);
-      await this.ledger.postEntry(
-        m, wallet, t, 'deposit_confirmed', t.amount, 'credit',
-      );
-      // Unattributed deposits never entered creditedAmount — bump the
-      // deposit-address baseline or the next poll re-detects the same
-      // delta and mints a second credit under a synthetic poll:* txid.
-      // Shared-custody rows can be bumped harmlessly: the delta path
-      // never reads them.
-      await m.increment(
-        DepositAddress,
-        { address: t.address, asset: t.asset },
-        'creditedAmount',
-        parseFloat(t.amount),
-      );
-      return t;
-    });
-    await this.notifier.notify('deposit.confirmed', tx);
-    return tx;
   }
 
   /**

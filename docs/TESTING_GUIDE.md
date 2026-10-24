@@ -184,8 +184,8 @@ notification to your `webhookUrl`.
 **Test path:**
 
 1. Get the user's address from `GET /wallets/{id}` → `addresses[]`
-2. Send testnet funds to it (faucet / another wallet). For SOL, attach the
-   `memo` — without it the deposit lands in the unattributed queue
+2. Send testnet funds to it (faucet / another wallet). SOL needs no memo —
+   the address is already unique to the user
 3. Watch `GET /transactions?externalUserId=...` or your webhook receiver for:
    - `deposit.confirmed` — ledger credited, `balance` updated, **still reversible**
    - `deposit.finalized` — **terminal**: past the reorg horizon, safe to let the user spend
@@ -358,8 +358,7 @@ peer IP — the gate can't distinguish them. And `.env` edits require
 | `POST /wallets/{id}/watch` | `address`, `asset` | Re-watch an address — wrong-asset sends (e.g. USDT_TRON to a TRX address has no watch row → deposit invisible until watched); also reactivates retired rows. Watch rows are always permanent (`expiresAt: null`); revive promotes legacy expirable rows |
 | `POST /withdrawals/{id}/approve` | path id | Broadcast a parked `requires_approval` withdrawal (treasury gate still applies) |
 | `POST /withdrawals/{id}/reject` | path id | Refuse it — the debit reverses, user balance restored |
-| `GET /deposits/unattributed?chain=` | `chain` optional | Ops queue: real on-chain funds with no attribution (memo-less SOL deposits) |
-| `POST /deposits/{id}/credit` | `appId`, `externalUserId` | Manually credit an unattributed deposit — idempotent, 409 if already attributed |
+| `GET /deposits/unattributed?chain=` | `chain` optional | Ops queue: real on-chain funds with no attribution — visibility only; no in-API credit path (deliberate off-API accounting) |
 | `POST /sweep` | `depositAddressId` (UUID) | Consolidate a deposit address → treasury, KMS-signed. Token sweeps on gas-hungry chains (ERC-20, SPL) may need a native top-up first |
 | `POST /address-pool` | `entries[]: {signatureId, address}` | Bulk-seed pooled SOL deposit addresses — deduped per unique address |
 | `GET /address-pool/stats` | — | Pool health per chain (`free` vs `assigned`). Low `free` → reseed before SOL wallet provisioning starts failing 503 |

@@ -229,11 +229,13 @@ The provider isolates all of these; if Tatum changes an enum, grep
   resolves the owner's ATAs via `getTokenAccountsByOwner` filtered by the
   TOKEN PROGRAM (not `{mint}` — a mint param the RPC can't unpack hard-
   errors), then scans each ATA's signatures and filters by mint locally.
-- Every inbound to the shared base needs the wallet's memo
-  (`bl-xxxxxxxx`); no/foreign memo → `deposit.unattributed` → ops queue
-  (`GET /api/v1/admin/deposits/unattributed`, credit via
-  `POST .../deposits/:id/credit`). Never re-derive ownership from
-  amount/timing — the code doesn't, don't do it manually either.
+- Legacy shared-base inbounds attributed by the wallet's memo
+  (`bl-xxxxxxxx`); the shared model is retired — stray sends to the old
+  address sit in treasury undetected. Wallet-less flagged rows surface on
+  `GET /api/v1/admin/deposits/unattributed` — **no credit endpoint exists**;
+  resolution is deliberate off-API accounting after verifying the depositor.
+  Never re-derive ownership from amount/timing — the code doesn't, don't
+  do it manually either.
 - Outbound txs on the base (sweeps, ops sends) net ≤0 to the base and are
   re-checked harmlessly each cycle; they never create rows.
 - Testnet quirk: `enabledAssets()` returns raw registry contracts — only

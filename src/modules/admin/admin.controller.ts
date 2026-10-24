@@ -145,18 +145,6 @@ class UpdateClientDto {
   rotate?: boolean;
 }
 
-class CreditDepositDto {
-  @ApiProperty({ description: 'Tenant slug owning the destination wallet' })
-  @IsString()
-  @IsNotEmpty()
-  appId: string;
-
-  @ApiProperty({ description: 'The tenant-side user id to credit' })
-  @IsString()
-  @IsNotEmpty()
-  externalUserId: string;
-}
-
 // ---- response DTOs (wire shapes; entities never leave the service) ----
 
 export class CustodyViewDto {
@@ -590,31 +578,14 @@ export class AdminController {
   @Get('deposits/unattributed')
   @ApiOperation({
     summary:
-      'OPS review queue — verified on-chain deposits to shared custody ' +
-      'addresses (SOL) whose memo resolved no wallet. These are real ' +
-      'funds awaiting manual attribution; they credit no one until ' +
-      'POST /deposits/:id/credit runs.',
+      'OPS review queue — verified on-chain deposits that resolved no ' +
+      'wallet (legacy shared-custody memos, indexer-attribution gaps, ' +
+      'stale webhook subscriptions). Real funds flagged for ops review ' +
+      '— visibility only; crediting them is deliberate off-API accounting.',
   })
   @ApiQuery({ name: 'chain', required: false, description: 'Narrow to one chain (e.g. SOL)' })
   @ApiOkResponse({ type: [UnattributedDepositViewDto] })
   listUnattributed(@Query('chain') chain?: string) {
     return this.transactions.listUnattributedDeposits(chain);
-  }
-
-  @Post('deposits/:id/credit')
-  @ApiOperation({
-    summary:
-      'Manually credit an unattributed shared-address deposit to a ' +
-      'specific wallet. Explicit target (appId + externalUserId), ' +
-      'idempotent — an already-attributed deposit returns 409 rather ' +
-      'than double-crediting.',
-  })
-  @ApiCreatedResponse({ type: TransactionViewDto })
-  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown deposit id or no wallet for (appId, externalUserId)' })
-  @ApiConflictResponse({ type: ErrorResponseDto, description: 'Deposit already attributed' })
-  creditDeposit(@Param('id') id: string, @Body() dto: CreditDepositDto) {
-    return this.transactions.creditUnattributedDeposit(
-      id, dto.appId, dto.externalUserId,
-    ).then((tx) => this.transactions.toView(tx));
   }
 }

@@ -274,12 +274,10 @@ wrong asset to a watched address, ops re-arms polling via
 `POST /admin/wallets/<walletId>/watch` (admin-gated). This is operator
 tooling — your app never calls it; raise it with ops when it happens.
 
-**Unattributed SOL deposits:** `GET /admin/deposits/unattributed` lists
-verified on-chain deposits whose memo resolved no wallet (missing, typo'd,
-or foreign memos — txid, amount, memo shown). Ops credits one explicitly
-via `POST /admin/deposits/<id>/credit` `{"appId","externalUserId"}` —
-idempotent (a second credit 409s), ledger-audited, and the user receives
-the normal `deposit.confirmed` webhook.
+**Unattributed deposits:** `GET /admin/deposits/unattributed` lists
+verified on-chain funds that resolved no wallet (txid, amount, memo
+shown). There is no crediting endpoint — resolution is a deliberate
+off-API accounting action by ops after verifying the depositor.
 
 **Disaster-recovery note (ops):** deposit addresses derive from a
 monotonic per-chain index — the same wallet recreated in the same order
@@ -290,30 +288,20 @@ other's addresses and balances.
 
 ## SOL deposits — the memo model
 
-Solana can't derive per-user addresses (no xpub), so **all users share one
-SOL deposit address** — attribution comes from a memo, the same way
-Binance/Kraken/Bybit handle Solana and XLM/XRP handle destination tags:
+Solana can't derive per-user addresses (no xpub), so each wallet instead
+receives a **pooled unique SOL address** — a full keypair minted on the
+KMS host, assigned permanently to that one wallet:
 
-- The wallet's `addresses` entry for SOL carries `memo` (e.g.
-  `bl-x7k9m2pq`) and `memoRequired: true`. **The memo is per wallet —
-  show it with the address.**
-- The sender writes the memo into the transaction's Solana **Memo program
-  instruction** — every wallet and exchange supports it ("add memo/tag/
-  note" field on the send form; Phantom, Solflare, Binance withdrawals…).
-- The deposit scanner reads inbound transactions to the shared address,
-  exact-matches the memo to a wallet, and credits it — same
-  `deposit.pending`/`deposit.confirmed` webhooks as every other chain.
-- **A deposit with a missing, wrong, or foreign memo is NOT lost** — it
-  is recorded on-chain, flagged `unattributed`, and lands in the ops
-  review queue for manual crediting (worst case: slower, not gone).
-  It simply never *auto*-credits — we never guess ownership from
-  amounts or timing.
-- The memo works for `USDC_SOL` too — one code covers every asset on the
-  chain.
-
-Client UX obligation: treat `memoRequired: true` like a checkout field —
-if your UI lets a user copy the SOL address without the memo, some
-deposits WILL arrive unattributed and queue for manual review.
+- The wallet's `addresses` entry for SOL is unique per user — **no memo,
+  no `memoRequired`** — deposits attribute by address exactly like BTC
+  or ETH, with the same `deposit.pending`/`deposit.confirmed` webhooks.
+- `USDC_SOL` rides the same address — one entry covers both assets.
+- There is no shared address and no memo path. A deposit to the user's
+  SOL address can only belong to that user.
+- Legacy note: wallets created under the retired shared-memo model
+  migrate on first read — their response swaps the shared address for a
+  pooled one. Tell those users to refresh their saved address; strays
+  to the old address land in treasury and are resolved by ops.
 
 **Withdrawal caveat:** sending TO an exchange address that requires *its*
 memo is not yet supported — the send API has no memo field today. If your
