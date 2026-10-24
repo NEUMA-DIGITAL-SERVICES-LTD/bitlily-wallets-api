@@ -349,7 +349,7 @@ peer IP — the gate can't distinguish them. And `.env` edits require
 | `POST /clients` | `slug*` (`^[a-z0-9-]+$`), `name`, `webhookUrl`, `scopes`, `allowedIps` (CIDRs), `enforceBalance` | Register a tenant — **returns `apiKey` + `webhookSecret` exactly once** |
 | `PATCH /clients/{slug}` | `name`, `webhookUrl`, `scopes`, `allowedIps` (`[]` clears), `active` (false suspends), `enforceBalance`, `rotate` (new creds, old key dies) | Update a **db** client — env slugs 404 by design |
 | `GET /custody` / `POST /custody` *(hidden from Swagger — ops bootstrap only)* | `chain`, `xpub`/`baseAddress`, `signatureId`, `kmsAddress` (pair proof), `treasuryAddress`, `rotate` | List / enroll KMS custody wallets — **once per chain** (bootstrap or rotation), then `POST /wallets` derives from it. The pair proof refuses mismatched key material |
-| `POST /wallets/{id}/watch` | `address`, `asset` | Re-watch an address — late payments, wrong-asset sends. Watch rows are always permanent (`expiresAt: null`); revive promotes legacy expirable rows to permanent |
+| `POST /wallets/{id}/watch` | `address`, `asset` | Re-watch an address — wrong-asset sends (e.g. USDT_TRON to a TRX address has no watch row → deposit invisible until watched); also reactivates retired rows. Watch rows are always permanent (`expiresAt: null`); revive promotes legacy expirable rows |
 | `POST /withdrawals/{id}/approve` | path id | Broadcast a parked `requires_approval` withdrawal (treasury gate still applies) |
 | `POST /withdrawals/{id}/reject` | path id | Refuse it — the debit reverses, user balance restored |
 | `GET /deposits/unattributed?chain=` | `chain` optional | Ops queue: real on-chain funds with no attribution (memo-less SOL deposits) |
