@@ -258,30 +258,18 @@ export class WalletsService {
   }
 
   /**
-   * Generates (or reuses) a deposit address for an asset.
-   * `persistent: true` = exchange model (Bybit-style): the wallet's ONE
-   * permanent address for this chain — first call derives it, later calls
-   * return the same row. Default = per-payment address with TTL +
-   * `reference` tying it to an order/invoice (Selly-style flow).
+   * Generates (or reuses) a deposit address for an asset — exchange model
+   * only: the wallet's ONE permanent address per (chain, asset). First
+   * call derives it, later calls return the same row; a legacy expiring
+   * row is promoted to permanent rather than replaced.
    */
   async generateDepositAddress(
     walletId: string,
     appId: string,
     assetCode: string,
-    reference?: string,
-    expiresInMinutes?: number,
-    persistent?: boolean,
   ): Promise<DepositAddress> {
     const asset = getAsset(assetCode);
     if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
-    if (persistent && expiresInMinutes != null) {
-      throw new BadRequestException(
-        'persistent addresses never expire — expiresInMinutes cannot be combined with persistent',
-      );
-    }
-
-    const ttl = expiresInMinutes ?? this.config.get<number>('detection.addressTtlMinutes');
-    const expiresAt = persistent ? null : ttl ? new Date(Date.now() + ttl * 60_000) : null;
 
     return this.dataSource.transaction(async (em) => {
       // The account is per-CHAIN: USDC_ETH deposits derive from the wallet's
@@ -294,28 +282,22 @@ export class WalletsService {
         `No ${asset.chain} account for wallet ${walletId}`,
       );
 
-      // Persistent (exchange-style): one address per (wallet, asset) —
-      // reuse the existing row, promote any expiring row to permanent.
-      // reference is order-level metadata; it doesn't apply to a permanent
-      // user address, so a persistent request never overwrites it.
-      if (persistent) {
-        // Prefer the permanent row; else reuse the newest (promote it to
-        // permanent rather than deriving yet another address).
-        const [existing] = await em.find(DepositAddress, {
-          where: { account: { id: account.id }, asset: asset.code },
-          order: { expiresAt: 'DESC', createdAt: 'DESC' },
-          take: 1,
-        });
-        if (existing) {
-          existing.status = 'active';
-          existing.expiresAt = null;
-          await this.ensureAccountMemo(em, account);
-          const saved = await em.save(existing);
-          await this.ensureSameChainWatches(
-            em, account, saved.address, saved.derivationIndex, asset.code, null, reference,
-          );
-          return saved;
-        }
+      // One address per (wallet, asset): reuse the existing row, promote
+      // any legacy expiring row to permanent rather than deriving again.
+      const [existing] = await em.find(DepositAddress, {
+        where: { account: { id: account.id }, asset: asset.code },
+        order: { expiresAt: 'DESC', createdAt: 'DESC' },
+        take: 1,
+      });
+      if (existing) {
+        existing.status = 'active';
+        existing.expiresAt = null;
+        await this.ensureAccountMemo(em, account);
+        const saved = await em.save(existing);
+        await this.ensureSameChainWatches(
+          em, account, saved.address, saved.derivationIndex, asset.code,
+        );
+        return saved;
       }
 
       // Unique-address model for chains that can't derive addresses at
@@ -350,7 +332,7 @@ export class WalletsService {
           row.status = 'active';
           const saved = await em.save(row);
           await this.ensureSameChainWatches(
-            em, account, saved.address, saved.derivationIndex, asset.code, null, reference,
+            em, account, saved.address, saved.derivationIndex, asset.code,
           );
           return saved;
         }
@@ -368,39 +350,6 @@ export class WalletsService {
         );
       }
 
-      // Account-model chains (SOL) have a single base address and cannot
-      // derive fresh ones. Reuse the active row: refresh reference/expiry
-      // instead of colliding on the (address, asset) unique index. Per-order
-      // SOL attribution needs memo/keypair-per-order — tracked as a gap.
-      if (account.baseAddress) {
-        // Reuse THE row regardless of status — the (account,address,asset)
-        // unique index means inserting another row 500s forever once the
-        // first retires (live-caught: SOL wallets broke after one cycle).
-        const existing = await em.findOne(DepositAddress, {
-          where: { account: { id: account.id }, asset: asset.code },
-        });
-        if (existing) {
-          existing.status = 'active';
-          // A permanent row (persistent, or TTL=0 config) is never demoted
-          // by a per-payment request — account-model chains have only this
-          // one address, so stamping an expiry would silently retire the
-          // user's saved deposit address. Reference is order metadata and
-          // likewise must not bleed onto a permanent user address.
-          const permanent = existing.expiresAt === null;
-          if (!permanent) {
-            existing.reference = reference ?? existing.reference;
-            existing.expiresAt = expiresAt;
-          }
-          await this.ensureAccountMemo(em, account);
-          const saved = await em.save(existing);
-          await this.ensureSameChainWatches(
-            em, account, saved.address, saved.derivationIndex, asset.code,
-            permanent ? null : expiresAt, reference,
-          );
-          return saved;
-        }
-      }
-
       const index = account.baseAddress ? 0 : await this.allocIndex(em, account.chain);
       const address = await this.provider.generateDepositAddress(
         { chain: account.chain as any, xpub: account.xpub, baseAddress: account.baseAddress },
@@ -414,14 +363,13 @@ export class WalletsService {
           chain: account.chain,
           asset: asset.code,
           derivationIndex: index,
-          reference,
-          expiresAt,
+          expiresAt: null,
         }),
       );
       await this.ensureAccountMemo(em, account);
 
       await this.ensureSameChainWatches(
-        em, account, address, index, asset.code, expiresAt, reference,
+        em, account, address, index, asset.code,
       );
 
       // Webhook mode registers provider-side monitoring; polling mode relies
@@ -537,10 +485,8 @@ export class WalletsService {
     em: EntityManager,
     account: WalletAccount,
     address: string,
-    derivationIndex: number,
+    derivationIndex: number | null,
     primaryAsset: string,
-    expiresAt: Date | null,
-    reference?: string,
   ): Promise<void> {
     for (const other of enabledAssets().filter(
       (a) => a.chain === account.chain && a.code !== primaryAsset,
@@ -552,21 +498,11 @@ export class WalletsService {
         where: { account: { id: account.id }, address, asset: other.code },
       });
       if (row) {
-        // Refresh when retired/expired; for a permanent parent (expiresAt
-        // null) promote any expiring watch — a permanent address with
-        // expiring recovery rows would silently lose wrong-asset coverage.
-        // Symmetrically, a permanent watch row is NEVER demoted: JS
-        // `null < Date` is true, so without the guard an expiring parent
-        // would stamp an expiry onto the permanent row.
-        const stale =
-          row.expiresAt === null
-            ? false
-            : expiresAt
-              ? row.expiresAt < expiresAt
-              : true;
-        if (row.status !== 'active' || stale) {
+        // Rows are all permanent now — a legacy expiring watch row is
+        // promoted, never left to lapse into invisible wrong-asset coverage.
+        if (row.status !== 'active' || row.expiresAt !== null) {
           row.status = 'active';
-          row.expiresAt = expiresAt;
+          row.expiresAt = null;
           await em.save(row);
         }
         continue;
@@ -578,8 +514,7 @@ export class WalletsService {
           chain: account.chain,
           asset: other.code,
           derivationIndex,
-          reference,
-          expiresAt,
+          expiresAt: null,
         }),
       );
     }
@@ -657,7 +592,7 @@ export class WalletsService {
     await this.ensureChainAccounts(walletId, appId, chains);
     await Promise.all(
       [...firstAssetOfChain.values()].map((code) =>
-        this.generateDepositAddress(walletId, appId, code, undefined, undefined, true),
+        this.generateDepositAddress(walletId, appId, code),
       ),
     );
   }

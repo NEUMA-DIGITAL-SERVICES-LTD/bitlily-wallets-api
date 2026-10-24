@@ -135,7 +135,6 @@ export const historyConfig = registerAs('history', () => {
 export const detectionConfig = registerAs('detection', () => ({
   strategy: (process.env.DEPOSIT_DETECTION ?? 'polling') as 'polling' | 'webhook',
   pollIntervalMs: parseInt(process.env.DEPOSIT_POLL_INTERVAL_MS ?? '120000', 10),
-  addressTtlMinutes: parseInt(process.env.DEPOSIT_ADDRESS_TTL_MINUTES ?? '60', 10),
   /**
    * SOL deposit model. Solana is ed25519 — hardened-only derivation, no
    * xpub — so per-user unique addresses must come from a pool pre-derived

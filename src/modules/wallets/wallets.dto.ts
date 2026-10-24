@@ -78,43 +78,6 @@ export class WalletQueryDto {
   reference?: string;
 }
 
-export class GenerateAddressDto {
-  @ApiProperty({ description: 'Asset code, e.g. BTC, USDT_TRON' })
-  @IsString()
-  @IsNotEmpty()
-  asset: string;
-
-  @ApiPropertyOptional({
-    description:
-      'Client reference (order/invoice ID) for Selly-style per-payment addresses',
-  })
-  @IsString()
-  @IsOptional()
-  reference?: string;
-
-  @ApiPropertyOptional({
-    description:
-      'Minutes until this address expires (stops deposit polling). Omit → service default (DEPOSIT_ADDRESS_TTL_MINUTES).',
-    default: 60,
-  })
-  @IsInt()
-  @Min(1)
-  @Max(10080)
-  @IsOptional()
-  expiresInMinutes?: number;
-
-  @ApiPropertyOptional({
-    description:
-      'Exchange-style deposit address: get-or-create the wallet\'s single ' +
-      'permanent address for this chain — first call derives it, every ' +
-      'later call returns the same address. For top-up UX; for per-order ' +
-      'addresses, omit and use expiresInMinutes/reference instead.',
-  })
-  @IsBoolean()
-  @IsOptional()
-  persistent?: boolean;
-}
-
 export class WatchAddressDto {
   @ApiProperty({ description: 'The deposit address to (re)watch' })
   @IsString()

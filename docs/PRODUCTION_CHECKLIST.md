@@ -36,11 +36,9 @@ mainnet traffic until the "Blocking" section is done.
 - [ ] **12. `CONFIRMATIONS_*`** — review vs chain finality at expected
       ticket sizes (current: BTC 2, LTC 4, ETH 12, POLYGON 64, SOL 32,
       TRON 20)
-- [ ] **13. `DEPOSIT_ADDRESS_TTL_MINUTES`** — currently 60; confirm the
-      client's deposit UX fits inside one hour, or raise it
-- [ ] **14. `TREASURY_GAS_FLOOR`** — per-chain overrides if the defaults
+- [ ] **13. `TREASURY_GAS_FLOOR`** — per-chain overrides if the defaults
       (`.env.example`) don't match treasury sizing
-- [ ] **15. `TREASURY_GAS_FLOOR` alerts routed** — `treasury.gas_low`
+- [ ] **14. `TREASURY_GAS_FLOOR` alerts routed** — `treasury.gas_low`
       events must reach someone who can refill gas (outbox → main app
       webhook or pager)
 

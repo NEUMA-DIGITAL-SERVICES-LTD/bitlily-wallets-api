@@ -77,10 +77,10 @@ A full-codebase audit found 22 issues. Status after the fix pass:
 
 ## Honest limitations (review these first)
 
-1. **Deposit TTL**: watch rows expire after
-   `DEPOSIT_ADDRESS_TTL_MINUTES` (default 60). Customer deposit
-   addresses are intentionally ephemeral — long-lived reuse is
-   unsupported. Treasury rows run `expires_at=NULL`.
+1. **Address reuse**: deposit addresses are PERMANENT per
+   (wallet, chain) — `expires_at` is always NULL on new rows.
+   Long-lived reuse is the design; the trade-off is that an address
+   leak/doxxing can't be rotated away without a new wallet.
 2. **SOL confirmations are approximated.** Tatum indexes only settled
    SOL txs; the service reports `err:null + slot` as finalized
    (confs=32). Deep-reorg detection on Solana does not exist — on

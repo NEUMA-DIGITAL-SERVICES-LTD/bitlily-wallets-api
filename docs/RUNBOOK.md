@@ -35,9 +35,9 @@ Check, in order:
    SELECT address,asset,status,expires_at,credited_amount
    FROM deposit_addresses WHERE address='<addr>';
    ```
-   If `retired`: check `expires_at`. `DEPOSIT_ADDRESS_TTL_MINUTES`
-   defaults to 60 — watch rows expire by design for customer addresses.
-   Treasury/custody rows must have `expires_at=NULL`. Reactivate:
+   If `retired`: check `expires_at`. Watch rows are PERMANENT — a row
+   with `expires_at` set is legacy TTL-era data or was retired by ops.
+   Reactivate (also promotes to permanent):
    ```sql
    UPDATE deposit_addresses SET status='active',expires_at=NULL
    WHERE address='<addr>';
