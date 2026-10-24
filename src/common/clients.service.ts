@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -6,6 +6,7 @@ import { timingSafeEqual } from 'crypto';
 import { ApiClient } from '../database/entities/api-client.entity';
 import { ApiClientConfig } from '../config/configuration';
 import { isCidrEntry } from './ip-match';
+import { errCode } from './errors';
 
 export interface ResolvedClient {
   appId: string;
@@ -124,13 +125,35 @@ export class ClientsService {
     enforceBalance?: boolean;
   }): Promise<ApiClient> {
     this.assertValidIps(input.allowedIps);
+    // Fail loudly on slug collisions — a raw 23505 surfaces as a cryptic
+    // 500, and an env-defined slug would save fine yet stay shadowed
+    // forever (env wins at merge). Both are 409s, not 500s.
+    const envSlugs = new Set(
+      (this.config.get<ApiClientConfig[]>('service.clients') ?? []).map((c) => c.slug),
+    );
+    if (envSlugs.has(input.slug)) {
+      throw new ConflictException(
+        `slug '${input.slug}' is reserved by an env-defined client — change it in API_CLIENTS, not here`,
+      );
+    }
+    if (await this.repo.findOne({ where: { slug: input.slug } })) {
+      throw new ConflictException(`slug '${input.slug}' is already registered`);
+    }
     const apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;
-    const row = await this.repo.save(
-      this.repo.create({ ...input, apiKey, webhookSecret }),
-    );
-    this.cache = null;
-    return row;
+    try {
+      const row = await this.repo.save(
+        this.repo.create({ ...input, apiKey, webhookSecret }),
+      );
+      this.cache = null;
+      return row;
+    } catch (e) {
+      // Race window: the check above passed, but a concurrent create won.
+      if (errCode(e) === '23505') {
+        throw new ConflictException(`slug '${input.slug}' is already registered`);
+      }
+      throw e;
+    }
   }
 
   async update(slug: string, patch: Partial<ApiClient>, rotate = false) {
