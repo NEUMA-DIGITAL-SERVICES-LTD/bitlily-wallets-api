@@ -1,4 +1,5 @@
 import { registerAs } from '@nestjs/config';
+import { isCidrEntry } from '../common/ip-match';
 
 export interface ApiClientConfig {
   /** Tenant slug stamped on wallets.app_id — 'default' is the legacy
@@ -9,7 +10,7 @@ export interface ApiClientConfig {
   /** This app's outbound webhook endpoint + HMAC secret. */
   webhookUrl?: string;
   webhookSecret?: string;
-  /** CIDRs/IPs this key may be used from. Absent = unrestricted. */
+  /** CIDRs this key may be used from (host → /32 or /128). Absent = unrestricted. */
   allowedIps?: string[];
   /**
    * false = the client's backend owns balance checks (e.g. fiat-funded
@@ -33,7 +34,20 @@ export const serviceConfig = registerAs('service', () => {
     adminApiKeys: (process.env.ADMIN_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
     /** Optional CIDR list for X-Admin-Key callers — the key that mints
      *  spend-capable credentials should only work from ops egress. */
-    adminAllowedIps: (process.env.ADMIN_ALLOWED_IPS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    /** Optional CIDR list for X-Admin-Key callers — the key that mints
+     *  spend-capable credentials should only work from ops egress.
+     *  CIDR notation required (a single host needs its /32 or /128 suffix);
+     *  a malformed entry aborts boot rather than silently never matching. */
+    adminAllowedIps: (() => {
+      const list = (process.env.ADMIN_ALLOWED_IPS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      const bad = list.filter((e) => !isCidrEntry(e));
+      if (bad.length) {
+        throw new Error(
+          `ADMIN_ALLOWED_IPS entries must be CIDRs (host → ".../32" or ".../128"). Bad: ${bad.join(', ')}`,
+        );
+      }
+      return list;
+    })(),
     /** Multi-tenant API clients. Each gets a key AND its own webhook
      *  endpoint — app A's deposit events must never reach app B's server. */
     clients: clients.filter((c) => c?.slug && c?.apiKey),

@@ -3,9 +3,10 @@ import * as ipaddr from 'ipaddr.js';
 /**
  * IP allowlist matching for tenant/admin keys.
  *
- * Entries are exact IPs ('203.0.113.10', '2001:db8::1') or CIDRs
- * ('203.0.113.0/24', '2001:db8::/32'). Mixed v4/v6 is handled —
- * a v4 request can never match a v6 rule and vice versa.
+ * Entries are CIDRs ONLY ('203.0.113.10/32', '2001:db8::/128'). A bare IP
+ * never matches — the explicit prefix forces the author to say 'one host'
+ * vs 'a range' instead of letting a typo'd host silently widen/narrow.
+ * Mixed v4/v6 is handled — a v4 request can never match a v6 rule.
  *
  * Fail-closed: a list is set but the request IP or any entry can't be
  * parsed → that entry doesn't match; unparseable request IP → denied.
@@ -17,6 +18,24 @@ import * as ipaddr from 'ipaddr.js';
  * req.ip is the socket peer — honest but only usable when clients
  * connect directly.
  */
+/**
+ * Strict CIDR check for allowlist entries — used at config load (env) and at
+ * write time (tenant allowedIps) so a malformed entry fails LOUDLY there
+ * instead of silently never matching at request time.
+ */
+export function isCidrEntry(e: string): boolean {
+  try {
+    const [range, bits] = String(e).trim().split('/');
+    if (bits === undefined) return false;
+    const a = ipaddr.parse(range);
+    const n = parseInt(bits, 10);
+    const max = a.kind() === 'ipv4' ? 32 : 128;
+    return Number.isInteger(n) && n >= 0 && n <= max;
+  } catch {
+    return false;
+  }
+}
+
 export function ipAllowed(
   reqIp: string | undefined,
   cidrs: readonly string[] | null | undefined,
@@ -38,9 +57,7 @@ export function ipAllowed(
       if (!range) return false;
       const r = ipaddr.parse(range);
       if (addr.kind() !== r.kind()) return false;
-      if (bits === undefined) {
-        return addr.toNormalizedString() === r.toNormalizedString();
-      }
+      if (bits === undefined) return false; // bare IP — CIDR notation required
       const n = parseInt(bits, 10);
       return addr.kind() === 'ipv4'
         ? (addr as ipaddr.IPv4).match(r as ipaddr.IPv4, n)

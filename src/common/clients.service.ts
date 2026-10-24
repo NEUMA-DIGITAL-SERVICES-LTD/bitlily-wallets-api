@@ -3,9 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { timingSafeEqual } from 'crypto';
-import * as ipaddr from 'ipaddr.js';
 import { ApiClient } from '../database/entities/api-client.entity';
 import { ApiClientConfig } from '../config/configuration';
+import { isCidrEntry } from './ip-match';
 
 export interface ResolvedClient {
   appId: string;
@@ -162,17 +162,12 @@ export class ClientsService {
    */
   private assertValidIps(cidrs: string[] | null | undefined): void {
     for (const e of cidrs ?? []) {
-      try {
-        const [range, bits] = String(e).trim().split('/');
-        const a = ipaddr.parse(range);
-        if (bits !== undefined) {
-          const n = parseInt(bits, 10);
-          const max = a.kind() === 'ipv4' ? 32 : 128;
-          if (!Number.isInteger(n) || n < 0 || n > max) throw new Error();
-        }
-      } catch {
+      // CIDR notation required — a single host needs its explicit /32 or
+      // /128 suffix. Bare IPs are rejected so 'host vs range' is always
+      // stated, never implied.
+      if (!isCidrEntry(e)) {
         throw new BadRequestException(
-          `allowedIps entry '${e}' is not a valid IP or CIDR (e.g. "203.0.113.10" or "203.0.113.0/24")`,
+          `allowedIps entry '${e}' is not a valid CIDR — a single host needs its explicit suffix (e.g. "203.0.113.10/32" or "2001:db8::1/128")`,
         );
       }
     }
