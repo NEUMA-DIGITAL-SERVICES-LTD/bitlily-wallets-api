@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { DataSource, EntityManager, FindOptionsWhere, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, FindOptionsWhere, IsNull, Not, Repository } from 'typeorm';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
@@ -203,20 +203,25 @@ export class WalletsService {
       memo?: string;
       memoRequired?: boolean;
     };
-    // Legacy shared-custody SOL accounts (pre-pool) still watch the shared
-    // baseAddress + memo. Migrate them to a pooled unique address on first
-    // read — attribution moves from memo to address, matching every other
-    // chain. The shared rows STAY active as a memo-attributed catch-all:
-    // sends to the old address still credit (or queue unattributed when
-    // memo-less); they're only hidden from this response so clients see
-    // the per-user address, never the shared one.
+    // Legacy shared-custody SOL accounts (pre-pool) may still watch the
+    // shared baseAddress + memo — or hold only RETIRED shared rows after
+    // the custody off-migration. Either way they get a pooled unique
+    // address on first read — attribution moves from memo to address,
+    // matching every other chain. Migration is keyed off the ACCOUNT's
+    // baseAddress marker, not surviving rows: an account whose shared
+    // rows all retired would otherwise show no SOL address forever.
+    // Any shared rows still active stay as a memo-attributed catch-all;
+    // they're only hidden below so clients see the per-user address.
     if (this.config.get('detection.solUniqueDeposits')) {
-      const seen = new Set<string>();
       let migrated = false;
-      for (const r of rows) {
-        const a = r.account;
-        if (!a?.baseAddress || a.chain !== 'SOL' || seen.has(a.id)) continue;
-        seen.add(a.id);
+      const sharedAccounts = await this.accounts.find({
+        where: {
+          wallet: { id: walletId },
+          chain: 'SOL',
+          baseAddress: Not(IsNull()),
+        },
+      });
+      for (const a of sharedAccounts) {
         migrated = (await this.migrateSharedSolAccount(a)) || migrated;
       }
       if (migrated) {
@@ -472,13 +477,27 @@ export class WalletsService {
    * model: claims a pool row, then mirrors the account's shared-address
    * watch assets onto the pooled address. Shared rows are left active —
    * they're the catch-all for deposits still arriving at the old address.
-   * Returns true when pooled rows exist afterward (already migrated or
-   * just created); false when the pool is empty and the account must stay
-   * on shared+memo for now.
+   * Returns true only when this call CHANGED state — the caller refetches
+   * rows afterward. Already-migrated accounts (fast path) and the
+   * pool-exhausted fallback both return false.
    */
   private async migrateSharedSolAccount(account: WalletAccount): Promise<boolean> {
     const base = account.baseAddress;
     if (!base) return false; // not a shared-custody account
+    // Fast path: an active pooled row means this account already migrated —
+    // skip the lock entirely so steady-state reads don't serialize on the
+    // account row, and report false so the caller skips its refetch.
+    // Pooled rows are keyed by != base (pool addresses are unique keypairs,
+    // never the shared custody address).
+    const alreadyPooled = await this.dataSource.manager.exists(DepositAddress, {
+      where: {
+        account: { id: account.id },
+        chain: 'SOL',
+        status: 'active',
+        address: Not(base),
+      },
+    });
+    if (alreadyPooled) return false;
     return this.dataSource.transaction(async (em) => {
       // Lock the account row first — two concurrent first-reads would each
       // pass allocatePoolAddress's assigned-check and claim DIFFERENT pool

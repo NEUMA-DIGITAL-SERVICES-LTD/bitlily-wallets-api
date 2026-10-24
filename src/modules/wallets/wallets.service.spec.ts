@@ -230,6 +230,8 @@ describe('WalletsService.permanentAddresses — shared→pooled migration', () =
         if (e === WalletAccount) return solAccount;
         throw new Error('not found');
       }),
+      // Steady-state fast path: an active pooled row skips the lock+tx.
+      exists: jest.fn(async () => pooledExist),
       findOne: jest.fn(async (e: any, o: any) => {
         if (e === AddressPool) {
           if (o?.where?.account?.id) return pool.find((r) => r.account?.id === solAccount.id) ?? null;
@@ -259,8 +261,11 @@ describe('WalletsService.permanentAddresses — shared→pooled migration', () =
     const dataSource: any = { transaction: jest.fn(async (cb: any) => cb(em)), manager: em };
     const config = { get: jest.fn((k: string) => (k === 'detection.solUniqueDeposits' ? true : undefined)) };
     const addresses = { find: jest.fn() };
+    // Migration keys off the ACCOUNT's baseAddress marker — the mock
+    // surfaces this wallet's shared-custody SOL account.
+    const accounts = { find: jest.fn().mockResolvedValue([solAccount]) };
     const svc = new WalletsService(
-      {} as any, {} as any, {} as any, addresses as any, {} as any,
+      {} as any, accounts as any, {} as any, addresses as any, {} as any,
       {} as any, {} as any, config as any, dataSource, {} as any,
     );
     return { svc, addresses, saved };
@@ -294,6 +299,22 @@ describe('WalletsService.permanentAddresses — shared→pooled migration', () =
     expect(res).toHaveLength(1);
     expect(res[0]).toMatchObject({ address: 'SoLbase111', memoRequired: true });
     expect(addresses.find).toHaveBeenCalledTimes(1); // nothing migrated, no refetch
+  });
+
+  it('all shared rows retired (custody off) — still migrates, no empty view', async () => {
+    // The custody off-migration retired every shared row. Active-only
+    // queries return nothing, so migration must key off the ACCOUNT —
+    // a row-driven trigger leaves the wallet with no SOL address.
+    const { svc, addresses, saved } = makeService([poolRow]);
+    addresses.find
+      .mockResolvedValueOnce([]) // shared rows all retired — none active
+      .mockResolvedValueOnce([...pooledRows]);
+
+    const res = await svc.permanentAddresses('w1');
+
+    expect(res).toHaveLength(1);
+    expect(res[0]).toMatchObject({ address: 'SoLpooled9', chain: 'SOL' });
+    expect(saved.filter((s) => s.address === 'SoLpooled9')).toHaveLength(2);
   });
 
   it('already-migrated account: shared row hidden without re-migrating', async () => {
