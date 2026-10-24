@@ -480,6 +480,13 @@ export class WalletsService {
     const base = account.baseAddress;
     if (!base) return false; // not a shared-custody account
     return this.dataSource.transaction(async (em) => {
+      // Lock the account row first — two concurrent first-reads would each
+      // pass allocatePoolAddress's assigned-check and claim DIFFERENT pool
+      // rows for the same account, permanently splitting its address set.
+      await em.findOneOrFail(WalletAccount, {
+        where: { id: account.id },
+        lock: { mode: 'pessimistic_write' },
+      });
       const pooled = await this.allocatePoolAddress(em, account);
       if (!pooled) {
         this.logger.warn(
@@ -517,6 +524,18 @@ export class WalletsService {
           }),
         );
       }
+      // Same parity provisioning offers: the pooled address watches EVERY
+      // enabled SOL asset, not just ones the shared row happened to have —
+      // a USDC_SOL send to a pooled address with no token watch is
+      // invisible, not merely unattributed. `primary` picks any already-
+      // mirrored asset (SOL preferred); a non-asset sentinel when `shared`
+      // is empty so the exclusion never skips a real asset.
+      const primary = shared.find((s) => s.asset === 'SOL')
+        ? 'SOL'
+        : shared[0]?.asset ?? 'SOL-missing';
+      await this.ensureSameChainWatches(
+        em, account, pooled.address, null, primary,
+      );
       return true;
     });
   }

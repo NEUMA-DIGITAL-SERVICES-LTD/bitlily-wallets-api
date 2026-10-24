@@ -226,19 +226,33 @@ describe('WalletsService.permanentAddresses — shared→pooled migration', () =
     const em: any = {
       find: jest.fn(async (e: any, o: any) =>
         e === DepositAddress && o?.where?.address === 'SoLbase111' ? [...sharedRows] : []),
+      findOneOrFail: jest.fn(async (e: any, o: any) => {
+        if (e === WalletAccount) return solAccount;
+        throw new Error('not found');
+      }),
       findOne: jest.fn(async (e: any, o: any) => {
         if (e === AddressPool) {
           if (o?.where?.account?.id) return pool.find((r) => r.account?.id === solAccount.id) ?? null;
           return pool.find((r) => !r.account) ?? null;
         }
         if (e === DepositAddress && o?.where?.address === 'SoLpooled9') {
-          return pooledExist
-            ? pooledRows.find((r) => r.asset === o.where.asset) ?? null
-            : null;
+          // Rows mirrored earlier in THIS transaction are visible to
+          // subsequent findOne calls in it — same as the real tx.
+          return (
+            saved.find(
+              (r) => r.address === 'SoLpooled9' && r.asset === o.where.asset,
+            ) ??
+            (pooledExist
+              ? pooledRows.find((r) => r.asset === o.where.asset) ?? null
+              : null)
+          );
         }
         return null;
       }),
-      create: jest.fn((_e: any, v: any) => v),
+      // TypeORM's create() applies entity column defaults — emulate the
+      // status:'active' default so ensureSameChainWatches sees mirrored
+      // rows as already-active instead of "reviving" them.
+      create: jest.fn((_e: any, v: any) => ({ status: 'active', ...v })),
       save: jest.fn(async (o: any) => { saved.push(o); return o; }),
       createQueryBuilder: jest.fn().mockReturnValue(qb),
     };
