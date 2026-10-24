@@ -32,23 +32,31 @@ import { Wallet } from '../../database/entities/wallet.entity';
 import { WatchAddressDto } from '../wallets/wallets.dto';
 
 class CreateClientDto {
-  @ApiProperty({ description: 'Tenant slug — stamped on wallets.app_id' })
+  @ApiProperty({
+    description: 'Tenant slug — stamped on wallets.app_id',
+    example: 'acme-store',
+  })
   @IsString()
   @IsNotEmpty()
   @Matches(/^[a-z0-9-]+$/, { message: 'slug must be lowercase letters, digits, hyphens' })
   slug: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ example: 'Acme Storefront' })
   @IsString()
   @IsOptional()
   name?: string;
 
-  @ApiPropertyOptional({ description: 'Where this app receives webhook events' })
+  @ApiPropertyOptional({
+    description: 'Where this app receives webhook events',
+    example: 'https://api.acme.com/webhooks/bitlily',
+  })
   @IsString()
   @IsOptional()
   webhookUrl?: string;
 
   @ApiPropertyOptional({
+    type: [String],
+    example: ['wallet'],
     description:
       'Key capabilities: ["wallet"] = full tenant access (DEFAULT when ' +
       'omitted); ["read"] = shared/read endpoints only — wallet & ' +
@@ -60,10 +68,12 @@ class CreateClientDto {
   scopes?: string[];
 
   @ApiPropertyOptional({
+    type: [String],
+    example: ['203.0.113.0/24'],
     description:
-      'CIDRs this key may be used from, e.g. ["203.0.113.0/24"] — a ' +
-      'single host needs its explicit suffix ("203.0.113.10/32"). ' +
-      'Omit/empty = unrestricted. A leaked key is dead outside this list.',
+      'CIDRs this key may be used from — a single host needs its ' +
+      'explicit suffix ("203.0.113.10/32"). Omit/empty = unrestricted. ' +
+      'A leaked key is dead outside this list.',
   })
   @IsArray()
   @IsString({ each: true })
