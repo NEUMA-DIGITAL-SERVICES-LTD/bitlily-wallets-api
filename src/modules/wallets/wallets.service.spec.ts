@@ -40,9 +40,11 @@ describe('WalletsService.permanentAddresses', () => {
     };
     addresses = { find: jest.fn().mockResolvedValue([...solRows, ethRow]) };
     dataSource = { manager: m };
+    // Legacy shared+memo mode: solUniqueDeposits OFF so no migration runs.
+    const config = { get: jest.fn().mockReturnValue(false) };
     service = new WalletsService(
       {} as any, {} as any, {} as any, addresses, {} as any,
-      {} as any, {} as any, {} as any, dataSource, {} as any,
+      {} as any, {} as any, config as any, dataSource, {} as any,
     );
   });
 
@@ -190,5 +192,108 @@ describe('WalletsService.generateDepositAddress — SOL unique-deposit pool', ()
       service.generateDepositAddress('w1', 'default', 'SOL'),
     ).rejects.toThrow(/SOL deposit addresses temporarily exhausted/);
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('pool exhausted'));
+  });
+});
+
+/**
+ * Shared→pooled migration on the read path: a legacy shared-custody SOL
+ * account gets a pooled address and per-asset watch rows lazily on first
+ * permanentAddresses read. Shared rows stay ACTIVE (catch-all for sends
+ * to the old address) but are hidden from the client-facing response —
+ * the pooled per-user address is what clients must see.
+ */
+describe('WalletsService.permanentAddresses — shared→pooled migration', () => {
+  const solAccount = {
+    id: 'acct-sol', chain: 'SOL', baseAddress: 'SoLbase111', memo: 'bl-abc12345',
+  };
+  const sharedRows = [
+    { address: 'SoLbase111', chain: 'SOL', asset: 'SOL', account: solAccount, expiresAt: null, status: 'active', createdAt: new Date(1) },
+    { address: 'SoLbase111', chain: 'SOL', asset: 'USDC_SOL', account: solAccount, expiresAt: null, status: 'active', createdAt: new Date(2) },
+  ];
+  const pooledRows = [
+    { address: 'SoLpooled9', chain: 'SOL', asset: 'SOL', account: solAccount, expiresAt: null, status: 'active', createdAt: new Date(3) },
+    { address: 'SoLpooled9', chain: 'SOL', asset: 'USDC_SOL', account: solAccount, expiresAt: null, status: 'active', createdAt: new Date(4) },
+  ];
+  const poolRow = { id: 'pool-9', chain: 'SOL', address: 'SoLpooled9', account: null, assignedAt: null };
+
+  const makeService = (pool: any[], pooledExist = false) => {
+    const saved: any[] = [];
+    const qb = {
+      update: jest.fn().mockReturnThis(), set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    const em: any = {
+      find: jest.fn(async (e: any, o: any) =>
+        e === DepositAddress && o?.where?.address === 'SoLbase111' ? [...sharedRows] : []),
+      findOne: jest.fn(async (e: any, o: any) => {
+        if (e === AddressPool) {
+          if (o?.where?.account?.id) return pool.find((r) => r.account?.id === solAccount.id) ?? null;
+          return pool.find((r) => !r.account) ?? null;
+        }
+        if (e === DepositAddress && o?.where?.address === 'SoLpooled9') {
+          return pooledExist
+            ? pooledRows.find((r) => r.asset === o.where.asset) ?? null
+            : null;
+        }
+        return null;
+      }),
+      create: jest.fn((_e: any, v: any) => v),
+      save: jest.fn(async (o: any) => { saved.push(o); return o; }),
+      createQueryBuilder: jest.fn().mockReturnValue(qb),
+    };
+    const dataSource: any = { transaction: jest.fn(async (cb: any) => cb(em)), manager: em };
+    const config = { get: jest.fn((k: string) => (k === 'detection.solUniqueDeposits' ? true : undefined)) };
+    const addresses = { find: jest.fn() };
+    const svc = new WalletsService(
+      {} as any, {} as any, {} as any, addresses as any, {} as any,
+      {} as any, {} as any, config as any, dataSource, {} as any,
+    );
+    return { svc, addresses, saved };
+  };
+
+  it('migrates a shared account to a pooled address and hides the shared row', async () => {
+    const { svc, addresses, saved } = makeService([poolRow]);
+    addresses.find
+      .mockResolvedValueOnce([...sharedRows])
+      .mockResolvedValueOnce([...sharedRows, ...pooledRows]);
+
+    const res = await svc.permanentAddresses('w1');
+
+    // Pooled rows created for every shared-address asset
+    const created = saved.filter((s) => s.address === 'SoLpooled9');
+    expect(created.map((c) => c.asset).sort()).toEqual(['SOL', 'USDC_SOL']);
+    // Response shows ONLY the pooled address — no shared, no memo
+    expect(res).toHaveLength(1);
+    expect(res[0]).toMatchObject({ address: 'SoLpooled9', chain: 'SOL' });
+    expect(res[0].memo).toBeUndefined();
+    expect(res[0].assets).toEqual(['SOL', 'USDC_SOL']);
+    expect(addresses.find).toHaveBeenCalledTimes(2); // refetch after migration
+  });
+
+  it('pool exhaustion keeps the shared row visible with its memo', async () => {
+    const { svc, addresses } = makeService([]);
+    addresses.find.mockResolvedValue([...sharedRows]);
+
+    const res = await svc.permanentAddresses('w1');
+
+    expect(res).toHaveLength(1);
+    expect(res[0]).toMatchObject({ address: 'SoLbase111', memoRequired: true });
+    expect(addresses.find).toHaveBeenCalledTimes(1); // nothing migrated, no refetch
+  });
+
+  it('already-migrated account: shared row hidden without re-migrating', async () => {
+    const { svc, addresses, saved } = makeService(
+      [{ ...poolRow, account: solAccount }],
+      true,
+    );
+    addresses.find.mockResolvedValue([...sharedRows, ...pooledRows]);
+
+    const res = await svc.permanentAddresses('w1');
+
+    expect(res).toHaveLength(1);
+    expect(res[0].address).toBe('SoLpooled9');
+    // Mirror is idempotent — existing active pooled rows aren't re-saved
+    expect(saved.filter((s) => s.asset)).toHaveLength(0);
   });
 });

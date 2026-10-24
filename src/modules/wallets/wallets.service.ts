@@ -186,7 +186,7 @@ export class WalletsService {
    * ops internals, not user-facing addresses.
    */
   async permanentAddresses(walletId: string) {
-    const rows = await this.addresses.find({
+    let rows = await this.addresses.find({
       where: {
         account: { wallet: { id: walletId } },
         expiresAt: IsNull(),
@@ -203,6 +203,45 @@ export class WalletsService {
       memo?: string;
       memoRequired?: boolean;
     };
+    // Legacy shared-custody SOL accounts (pre-pool) still watch the shared
+    // baseAddress + memo. Migrate them to a pooled unique address on first
+    // read — attribution moves from memo to address, matching every other
+    // chain. The shared rows STAY active as a memo-attributed catch-all:
+    // sends to the old address still credit (or queue unattributed when
+    // memo-less); they're only hidden from this response so clients see
+    // the per-user address, never the shared one.
+    if (this.config.get('detection.solUniqueDeposits')) {
+      const seen = new Set<string>();
+      let migrated = false;
+      for (const r of rows) {
+        const a = r.account;
+        if (!a?.baseAddress || a.chain !== 'SOL' || seen.has(a.id)) continue;
+        seen.add(a.id);
+        migrated = (await this.migrateSharedSolAccount(a)) || migrated;
+      }
+      if (migrated) {
+        rows = await this.addresses.find({
+          where: {
+            account: { wallet: { id: walletId } },
+            expiresAt: IsNull(),
+            status: 'active',
+          },
+          relations: ['account'],
+          order: { createdAt: 'ASC' },
+        });
+      }
+      // Hide each shared-address group once its account has a pooled row —
+      // the pooled address is what clients should show/send to.
+      const pooledAccounts = new Set(
+        rows
+          .filter((r) => r.account?.baseAddress && r.address !== r.account.baseAddress)
+          .map((r) => r.account!.id),
+      );
+      rows = rows.filter(
+        (r) =>
+          r.address !== r.account?.baseAddress || !pooledAccounts.has(r.account!.id),
+      );
+    }
     const grouped = new Map<string, AddressGroup>();
     for (const r of rows) {
       // Backfill memos on shared-custody accounts that predate the memo
@@ -426,6 +465,60 @@ export class WalletsService {
       // Lost the claim race — loop and take the next free row.
     }
     return null;
+  }
+
+  /**
+   * Migrates a shared-custody SOL account to the pooled unique-address
+   * model: claims a pool row, then mirrors the account's shared-address
+   * watch assets onto the pooled address. Shared rows are left active —
+   * they're the catch-all for deposits still arriving at the old address.
+   * Returns true when pooled rows exist afterward (already migrated or
+   * just created); false when the pool is empty and the account must stay
+   * on shared+memo for now.
+   */
+  private async migrateSharedSolAccount(account: WalletAccount): Promise<boolean> {
+    const base = account.baseAddress;
+    if (!base) return false; // not a shared-custody account
+    return this.dataSource.transaction(async (em) => {
+      const pooled = await this.allocatePoolAddress(em, account);
+      if (!pooled) {
+        this.logger.warn(
+          `SOL pool exhausted — account ${account.id} stays on shared ` +
+          `address ${base} + memo until ops reseeds the pool.`,
+        );
+        return false;
+      }
+      const shared = await em.find(DepositAddress, {
+        where: { account: { id: account.id }, address: base },
+      });
+      for (const s of shared) {
+        const row = await em.findOne(DepositAddress, {
+          where: {
+            account: { id: account.id },
+            address: pooled.address,
+            asset: s.asset,
+          },
+        });
+        if (row) {
+          if (row.status !== 'active') {
+            row.status = 'active';
+            await em.save(row);
+          }
+          continue;
+        }
+        await em.save(
+          em.create(DepositAddress, {
+            account,
+            address: pooled.address,
+            chain: account.chain,
+            asset: s.asset,
+            derivationIndex: null,
+            expiresAt: null,
+          }),
+        );
+      }
+      return true;
+    });
   }
 
   /**

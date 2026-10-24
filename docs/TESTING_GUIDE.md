@@ -97,6 +97,15 @@ the flag off
 a shared custody address where the memo is the only attribution; memo-less
 deposits land in the unattributed ops queue (§7).
 
+**Legacy shared→pooled migration.** Wallets created while the flag was off
+keep their shared+memo rows as an active catch-all (sends to the old address
+still credit by memo, or queue unattributed), but on the first wallet read
+under `SOL_UNIQUE_DEPOSITS=true` the account silently claims a pool address
+and mirrors its watch assets onto it — the response then shows ONLY the
+pooled address, no memo. Exhausted pool → the account stays shared+memo
+until reseeded. Tell users to update their saved deposit address after the
+migration; stragglers to the old address still resolve via the ops queue.
+
 ### `GET /api/v1/wallets/{externalUserId}` — wallet + balances + history
 
 | Param | Where | What it's for |
