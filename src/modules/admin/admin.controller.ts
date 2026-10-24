@@ -334,11 +334,11 @@ export class AdminController {
   @ApiOperation({
     summary:
       'OPS recovery — re-watch an address for an asset on any tenant wallet. ' +
-      'Used for late payments to expired addresses and wrong-asset sends. ' +
-      'The watch row is ALWAYS permanent (expiresAt: null) — a recovery ' +
-      'watch that expired would re-hide the deposit it was created to ' +
-      'catch. Reviving a legacy expirable row promotes it to permanent. ' +
-      'Moved out of the client surface: this is operator tooling.',
+      'Primary use: wrong-asset sends (e.g. USDT_TRON to the wallet\'s TRX ' +
+      'address has no watch row, so the deposit stays invisible until ' +
+      'watched); also reactivates retired rows. The watch row is ALWAYS ' +
+      'permanent (expiresAt: null); a legacy expirable row is promoted to ' +
+      'permanent on revive. Moved out of the client surface: operator tooling.',
   })
   @ApiOkResponse({ type: WatchedAddressViewDto })
   @ApiNotFoundResponse({ type: ErrorResponseDto })

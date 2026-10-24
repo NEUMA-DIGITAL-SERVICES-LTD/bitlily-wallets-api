@@ -521,14 +521,14 @@ export class WalletsService {
   }
 
   /**
-   * Re-watch an address for an asset — recovery path for late payments to
-   * expired addresses and wrong-asset sends predating auto-watch.
+   * Re-watch an address for an asset — recovery path for wrong-asset
+   * sends (no watch row exists → the deposit is invisible) and for
+   * reactivating retired rows.
    * Restricted to addresses that already belong to this wallet: watching
    * arbitrary foreign addresses would credit funds we cannot sweep.
    *
-   * Watch rows are ALWAYS permanent — a recovery watch that expires
-   * re-hides the very deposit it was created to catch. Reviving a
-   * legacy expirable row promotes it to permanent as well.
+   * Watch rows are ALWAYS permanent — reviving a legacy expirable row
+   * promotes it to permanent as well.
    */
   async watchAddress(
     walletId: string,
