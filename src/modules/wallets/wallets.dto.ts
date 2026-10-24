@@ -50,8 +50,8 @@ export class WalletQueryDto {
 
   @ApiPropertyOptional({
     description:
-      'Restrict the transactions section to one chain, e.g. TRON. ' +
-      'Only applies when include contains transactions.',
+      'Scope the WHOLE view to one chain, e.g. TRON — addresses, ' +
+      'balances, and transactions all filter to that chain.',
   })
   @IsString()
   @IsOptional()
@@ -61,7 +61,7 @@ export class WalletQueryDto {
     description:
       'Restrict the transactions section to one asset code, e.g. ' +
       'USDT_TRON. Only applies when include contains transactions. ' +
-      'Combinable with chain (asset implies its chain anyway).',
+      'Must agree with chain — a cross-chain pair is a 400.',
   })
   @IsString()
   @IsOptional()

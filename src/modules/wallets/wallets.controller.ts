@@ -16,7 +16,8 @@ import { RequireScope } from '../../common/api-key.guard';
  *   GET  /wallets/{externalUserId}?include=balances,addresses,transactions
  *                   aggregate read by YOUR user id — include folds in
  *                   ledger balances, permanent addresses, and/or a
- *                   paginated tx page (chain=/asset=/reference= filters).
+ *                   paginated tx page. `chain` scopes the whole view;
+ *                   asset=/reference= filter the tx page only.
  *                   Pure read — never creates (GET is a safe method).
  *
  * Address recovery (re-watch after expiry / wrong-asset sends) is ops
@@ -53,8 +54,10 @@ export class WalletsController {
     summary:
       'Aggregate wallet read by YOUR user id — ?include=balances,' +
       'addresses,transactions folds sections in (default: ' +
-      'balances,addresses). Transactions paginate via txLimit/txPage and ' +
-      'filter via chain/asset/reference. Read-only — never creates.',
+      'balances,addresses). `chain` scopes addresses, balances, and ' +
+      'transactions to one chain. Transactions paginate via ' +
+      'txLimit/txPage and filter via asset/reference. ' +
+      'Read-only — never creates.',
   })
   @ApiOkResponse({ type: WalletViewDto })
   async get(

@@ -720,11 +720,33 @@ export class WalletsService {
     const inc = new Set(
       (q.include ?? 'balances,addresses').split(',').map((s) => s.trim()).filter(Boolean),
     );
+    // `chain` scopes the WHOLE view — addresses, balances, transactions.
+    // Resolved once up front so all three sections agree.
+    let chain: string | undefined;
+    if (q.chain) {
+      chain = q.chain.toUpperCase();
+      const valid = new Set<string>(ASSET_REGISTRY.map((a) => a.chain));
+      if (!valid.has(chain)) {
+        throw new BadRequestException(
+          `Unsupported chain: ${q.chain} (supported: ${[...valid].join(', ')})`,
+        );
+      }
+    }
     // accounts are custody internals (xpub + secretRef) — never on the wire.
     const { accounts: _drop, ...pub } = wallet;
     const view: Record<string, unknown> = { ...pub };
-    if (inc.has('balances')) view.balances = await this.ledger.getBalances(id);
-    if (inc.has('addresses')) view.addresses = await this.permanentAddresses(id);
+    if (inc.has('balances')) {
+      const balances = await this.ledger.getBalances(id);
+      view.balances = chain
+        ? balances.filter((b) => getAsset(b.asset)?.chain === chain)
+        : balances;
+    }
+    if (inc.has('addresses')) {
+      const addresses = await this.permanentAddresses(id);
+      view.addresses = chain
+        ? addresses.filter((a) => a.chain === chain)
+        : addresses;
+    }
     if (inc.has('transactions')) {
       const limit = Math.min(Math.max(q.txLimit ?? 20, 1), 100);
       const page = Math.max(q.txPage ?? 1, 1);
@@ -732,18 +754,14 @@ export class WalletsService {
       if (q.asset) {
         const asset = getAsset(q.asset);
         if (!asset) throw new BadRequestException(`Unsupported asset: ${q.asset}`);
-        where.asset = asset.code;
-      }
-      if (q.chain) {
-        const chain = q.chain.toUpperCase();
-        const valid = new Set<string>(ASSET_REGISTRY.map((a) => a.chain));
-        if (!valid.has(chain)) {
+        if (chain && asset.chain !== chain) {
           throw new BadRequestException(
-            `Unsupported chain: ${q.chain} (supported: ${[...valid].join(', ')})`,
+            `asset ${asset.code} settles on ${asset.chain}, not ${chain} — contradictory filters`,
           );
         }
-        where.chain = chain;
+        where.asset = asset.code;
       }
+      if (chain) where.chain = chain;
       if (q.reference) where.reference = q.reference;
       view.transactions = await this.txs.find({
         where,
