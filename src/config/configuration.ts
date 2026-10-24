@@ -49,8 +49,18 @@ export const serviceConfig = registerAs('service', () => {
       return list;
     })(),
     /** Multi-tenant API clients. Each gets a key AND its own webhook
-     *  endpoint — app A's deposit events must never reach app B's server. */
-    clients: clients.filter((c) => c?.slug && c?.apiKey),
+     *  endpoint — app A's deposit events must never reach app B's server.
+     *  allowedIps follow the same CIDR-only rule as ADMIN_ALLOWED_IPS —
+     *  a malformed entry aborts boot rather than silently never matching. */
+    clients: clients.filter((c) => c?.slug && c?.apiKey).map((c) => {
+      const bad = (c.allowedIps ?? []).filter((e) => !isCidrEntry(e));
+      if (bad.length) {
+        throw new Error(
+          `API_CLIENTS[${c.slug}].allowedIps entries must be CIDRs (host → ".../32" or ".../128"). Bad: ${bad.join(', ')}`,
+        );
+      }
+      return c;
+    }),
   };
 });
 
