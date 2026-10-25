@@ -196,9 +196,12 @@ Only when the reconciler flags divergence or a placeholder row persists:
 
 ## 8. Key material & secrets
 
-- `TATUM_API_KEY`, `SERVICE_API_KEYS`, `ADMIN_API_KEYS`,
+- `TATUM_API_KEY`, `SERVICE_API_KEYS`, `ADMIN_API_KEY_HASHES` (hex
+  SHA-256 of each admin key — preferred over raw `ADMIN_API_KEYS`),
   `WEBHOOK_SIGNING_SECRET`, `KMS_VERIFY_TOKEN` in `.env` — rotate on a
-  schedule; service keys rotated via env + rolling restart.
+  schedule; service keys rotated via env + rolling restart. Admin-key
+  rotation: hash the new key, swap the digest, recreate — raw keys never
+  need to sit in the env file.
 - Private keys must never appear in the service under
   `TATUM_USE_KMS=true` — provider code refuses env-key sends when KMS
   is on (regression test pins this).

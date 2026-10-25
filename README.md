@@ -155,7 +155,7 @@ Migrations run automatically on boot (`migrationsRun`).
 
 - [ ] Tatum PayGo+ plan — who owns this recurring cost?
 - [x] `TATUM_USE_KMS=true` + self-hosted Tatum KMS for signing — proven on testnet; prod needs the client's host + `generatemanagedwallet` per chain (see `docs/KMS_SETUP.md`)
-- [ ] `ADMIN_API_KEYS` + `KMS_VERIFY_TOKEN` set (admin endpoints fail-closed without them in prod)
+- [ ] `ADMIN_API_KEY_HASHES` (or `ADMIN_API_KEYS`) + `KMS_VERIFY_TOKEN` set (admin endpoints fail-closed without them in prod)
 - [ ] `WITHDRAWAL_LIMITS` + `WITHDRAWAL_APPROVAL_ABOVE` signed off per asset
 - [ ] IP-allowlist webhook ingress at LB (Tatum egress ranges)
 - [ ] Per-environment `SERVICE_API_KEYS`, rotate on schedule

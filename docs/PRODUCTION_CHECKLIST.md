@@ -20,8 +20,9 @@ mainnet traffic until the "Blocking" section is done.
 - [ ] **5. `WEBHOOK_INGRESS_URL`** = public HTTPS ingress of the prod
       deployment (`https://<domain>/api/v1/webhooks/tatum`)
 - [ ] **6. `MAIN_APP_WEBHOOK_URL`** + `WEBHOOK_SIGNING_SECRET` (prod)
-- [ ] **7. `SERVICE_API_KEYS` / `ADMIN_API_KEYS`** — production-grade
-      secrets from the secrets manager, not `.env` on disk
+- [ ] **7. `SERVICE_API_KEYS` / `ADMIN_API_KEY_HASHES`** — production-grade
+      secrets from the secrets manager, not `.env` on disk; prefer hashed
+      admin keys so a config leak can't yield a usable credential
 - [ ] **8. `USDT_MATIC` smoke test** — ~1 USDT deposit → credit →
       withdraw → settle on mainnet before enabling it in `ENABLED_ASSETS`
 - [ ] **9. TLS + edge**: HTTPS termination in front of :3100,

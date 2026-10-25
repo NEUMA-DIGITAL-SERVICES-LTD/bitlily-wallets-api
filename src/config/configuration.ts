@@ -32,8 +32,10 @@ export const serviceConfig = registerAs('service', () => {
     env: process.env.NODE_ENV ?? 'development',
     apiKeys: (process.env.SERVICE_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
     adminApiKeys: (process.env.ADMIN_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
-    /** Optional CIDR list for X-Admin-Key callers — the key that mints
-     *  spend-capable credentials should only work from ops egress. */
+    /** Hex SHA-256 digests of admin keys — preferred over storing raw
+     *  keys. Callers still send the raw key; it is hashed before
+     *  comparison. A leaked .env then yields unusable digests. */
+    adminApiKeyHashes: (process.env.ADMIN_API_KEY_HASHES ?? '').split(',').map((k) => k.trim().toLowerCase()).filter(Boolean),
     /** Optional CIDR list for X-Admin-Key callers — the key that mints
      *  spend-capable credentials should only work from ops egress.
      *  CIDR notation required (a single host needs its /32 or /128 suffix);

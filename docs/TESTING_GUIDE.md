@@ -21,7 +21,7 @@ tenant's data with your key.
 | Header | Where the value lives | Scope |
 |---|---|---|
 | `X-API-Key` | `API_CLIENTS` in `.env` (env clients), or returned once by `POST /admin/clients` (db clients) | All routes. Determines `appId` and scopes. |
-| `X-Admin-Key` | `ADMIN_API_KEYS` in `.env` | `/admin/*` and `/kms/*` routes only — ops tooling, never given to app users |
+| `X-Admin-Key` | `ADMIN_API_KEYS` (raw) or `ADMIN_API_KEY_HASHES` (hex SHA-256 of the keys — preferred; send the raw key either way) | `/admin/*` and `/kms/*` routes only — ops tooling, never given to app users |
 
 In Swagger: click **Authorize**, paste the tenant key into `x-api-key` and the
 admin key into `x-admin-key`. Both stay set for the session.
