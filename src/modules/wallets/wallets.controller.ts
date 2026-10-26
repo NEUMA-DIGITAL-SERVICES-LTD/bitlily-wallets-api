@@ -20,8 +20,8 @@ import { RequireScope } from '../../common/api-key.guard';
  *                   asset=/reference= filter the tx page only.
  *                   Pure read — never creates (GET is a safe method).
  *
- * Address recovery (re-watch after expiry / wrong-asset sends) is ops
- * tooling, not client API — it lives at POST /admin/wallets/:id/watch.
+ * Address recovery (re-watch after expiry / wrong-asset sends) is not
+ * currently exposed — reintroduce as ops tooling when needed.
  */
 @ApiTags('wallets')
 @ApiSecurity('x-api-key')

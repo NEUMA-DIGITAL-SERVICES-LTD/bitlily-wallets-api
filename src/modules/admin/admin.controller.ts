@@ -26,9 +26,7 @@ import { ClientsService } from '../../common/clients.service';
 import { addressPayload } from '../../common/address-payload';
 import { Inject } from '@nestjs/common';
 import { BLOCKCHAIN_PROVIDER, BlockchainProvider } from '../../providers/provider.interface';
-import { WalletsService } from '../wallets/wallets.service';
-import { Wallet } from '../../database/entities/wallet.entity';
-import { WatchAddressDto } from '../wallets/wallets.dto';
+
 
 class CreateClientDto {
   @ApiProperty({
@@ -192,14 +190,6 @@ export class ClientCredentialsDto {
   @ApiPropertyOptional() active?: boolean;
 }
 
-export class WatchedAddressViewDto {
-  @ApiProperty() address: string;
-  @ApiProperty() chain: string;
-  @ApiProperty() asset: string;
-  @ApiProperty({ enum: ['active', 'expired'] }) status: string;
-  @ApiPropertyOptional({ nullable: true }) expiresAt?: Date | null;
-}
-
 class PoolEntryDto {
   @ApiProperty({
     description:
@@ -315,32 +305,9 @@ export class AdminController {
     private readonly config: ConfigService,
     private readonly clients: ClientsService,
     @Inject(BLOCKCHAIN_PROVIDER) private readonly provider: BlockchainProvider,
-    private readonly walletOps: WalletsService,
-    @InjectRepository(Wallet)
-    private readonly wallets: Repository<Wallet>,
-  ) {}
 
-  @Post('wallets/:id/watch')
-  @ApiOperation({
-    summary:
-      'OPS recovery — re-watch an address for an asset on any tenant wallet. ' +
-      'Primary use: wrong-asset sends (e.g. USDT_TRON to the wallet\'s TRX ' +
-      'address has no watch row, so the deposit stays invisible until ' +
-      'watched); also reactivates retired rows. The watch row is ALWAYS ' +
-      'permanent (expiresAt: null); a legacy expirable row is promoted to ' +
-      'permanent on revive. Moved out of the client surface: operator tooling.',
-  })
-  @ApiOkResponse({ type: WatchedAddressViewDto })
-  @ApiNotFoundResponse({ type: ErrorResponseDto })
-  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Address is not on this wallet / wrong chain' })
-  async watchWalletAddress(@Param('id') id: string, @Body() dto: WatchAddressDto): Promise<WatchedAddressViewDto> {
-    const wallet = await this.wallets.findOne({ where: { id } });
-    if (!wallet) throw new NotFoundException(`Wallet ${id} not found`);
-    const d = await this.walletOps.watchAddress(
-      id, wallet.appId, dto.address, dto.asset,
-    );
-    return { address: d.address, chain: d.chain, asset: d.asset, status: d.status, expiresAt: d.expiresAt };
-  }
+
+  ) {}
 
   // Bootstrap ceremony — ops runs it once per chain on the KMS host, not
   // something the integrating dev calls. Hidden from the client-facing docs.

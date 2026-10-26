@@ -269,10 +269,10 @@ credentials (old ones die immediately).
 
 ## 9. Ops recovery (not part of your integration)
 
-If a user pays an address after its watch window lapses, or sends the
-wrong asset to a watched address, ops re-arms polling via
-`POST /admin/wallets/<walletId>/watch` (admin-gated). This is operator
-tooling — your app never calls it; raise it with ops when it happens.
+If a user sends the wrong asset to a watched address (e.g. a token the
+address has no watch row for), the deposit is invisible until ops
+re-arms polling directly on the watch table. There is no self-serve
+endpoint for this today — raise it with ops when it happens.
 
 **Unattributed deposits:** if real on-chain funds resolve no wallet, the
 deposit is flagged and `deposit.unattributed` fires to your webhook —

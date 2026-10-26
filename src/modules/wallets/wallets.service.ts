@@ -650,60 +650,6 @@ export class WalletsService {
   }
 
   /**
-   * Re-watch an address for an asset — recovery path for wrong-asset
-   * sends (no watch row exists → the deposit is invisible) and for
-   * reactivating retired rows.
-   * Restricted to addresses that already belong to this wallet: watching
-   * arbitrary foreign addresses would credit funds we cannot sweep.
-   *
-   * Watch rows are ALWAYS permanent — reviving a legacy expirable row
-   * promotes it to permanent as well.
-   */
-  async watchAddress(
-    walletId: string,
-    appId: string,
-    address: string,
-    assetCode: string,
-  ): Promise<DepositAddress> {
-    const asset = getAsset(assetCode);
-    if (!asset) throw new BadRequestException(`Unsupported asset: ${assetCode}`);
-
-    return this.dataSource.transaction(async (em) => {
-      const row = await em.findOne(DepositAddress, {
-        where: { address, asset: asset.code, account: { wallet: { id: walletId, appId } } },
-        relations: ['account'],
-      });
-      if (row) {
-        row.status = 'active';
-        row.expiresAt = null; // revive = promote to permanent
-        return em.save(row);
-      }
-      // No watch row for this asset — allowed only if the address is one of
-      // this wallet's own deposit addresses on the asset's chain.
-      const anyRow = await em.findOne(DepositAddress, {
-        where: { address, account: { wallet: { id: walletId, appId } } },
-        relations: ['account'],
-      });
-      if (!anyRow || anyRow.chain !== asset.chain) {
-        throw new BadRequestException(
-          `Address ${address} is not a ${asset.chain} deposit address on this wallet`,
-        );
-      }
-      return em.save(
-        em.create(DepositAddress, {
-          account: anyRow.account,
-          address,
-          chain: asset.chain,
-          asset: asset.code,
-          derivationIndex: anyRow.derivationIndex,
-          reference: anyRow.reference,
-          expiresAt: null,
-        }),
-      );
-    });
-  }
-
-  /**
    * Provision (or return existing) PERMANENT per-chain addresses for the
    * given assets — the exchange-model lazy mint folded into POST /wallets.
    * Dedupes by chain (same-chain assets share one address — one derive per

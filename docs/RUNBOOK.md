@@ -42,7 +42,8 @@ Check, in order:
    UPDATE deposit_addresses SET status='active',expires_at=NULL
    WHERE address='<addr>';
    ```
-   (There is also `POST /api/v1/wallets/:id/watch` for reactivation via API.)
+   (The `watch` admin endpoint was removed — SQL reactivation is the path
+   until a bulk/API variant is built.)
 
 2. **Poller errors**: `docker logs <api> | grep "Poll failed"` —
    ETIMEDOUT/ENETUNREACH = provider connectivity (§6); 4xx = provider

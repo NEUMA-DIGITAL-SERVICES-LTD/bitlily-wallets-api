@@ -78,17 +78,7 @@ export class WalletQueryDto {
   reference?: string;
 }
 
-export class WatchAddressDto {
-  @ApiProperty({ description: 'The deposit address to (re)watch' })
-  @IsString()
-  @IsNotEmpty()
-  address: string;
 
-  @ApiProperty({ description: 'Asset code to watch for, e.g. BTC, USDC_ETH' })
-  @IsString()
-  @IsNotEmpty()
-  asset: string;
-}
 
 /** One permanent deposit-address row in a wallet response. */
 export class DepositAddressViewDto {
