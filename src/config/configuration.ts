@@ -148,6 +148,19 @@ export const detectionConfig = registerAs('detection', () => ({
   strategy: (process.env.DEPOSIT_DETECTION ?? 'polling') as 'polling' | 'webhook',
   pollIntervalMs: parseInt(process.env.DEPOSIT_POLL_INTERVAL_MS ?? '120000', 10),
   /**
+   * Chains that get Tatum ADDRESS_EVENT subscriptions even under the
+   * polling strategy — for chains with no usable address-history
+   * indexer (BNB: BscScan is paywalled). The webhook supplies the txid
+   * the poller can't discover; verification still goes through the
+   * same re-fetch + output-check path, so spoofed events can't credit.
+   * One subscription per address, shared by all its same-chain watches.
+   * Env: DEPOSIT_SUBSCRIBE_CHAINS=BNB
+   */
+  subscribeChains: (process.env.DEPOSIT_SUBSCRIBE_CHAINS ?? '')
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean),
+  /**
    * SOL deposit model. Solana is ed25519 — hardened-only derivation, no
    * xpub — so per-user unique addresses must come from a pool pre-derived
    * on the KMS host (scripts/sol-pool-seed.js → POST /admin/address-pool).

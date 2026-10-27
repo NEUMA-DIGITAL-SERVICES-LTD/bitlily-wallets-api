@@ -414,19 +414,32 @@ export class WalletsService {
         em, account, address, index, asset.code,
       );
 
-      // Webhook mode registers provider-side monitoring; polling mode relies
-      // on the DepositPoller — no per-address subscription cost.
-      const useWebhooks = this.config.get('detection.strategy') === 'webhook';
+      // Webhook mode registers provider-side monitoring for every chain;
+      // detection.subscribeChains adds the same for chains whose history
+      // indexer is unusable (BNB/BscScan is paywalled) while the poller
+      // stays the primary detector everywhere else.
+      const useWebhooks =
+        this.config.get('detection.strategy') === 'webhook' ||
+        (this.config.get<string[]>('detection.subscribeChains') ?? [])
+          .includes(account.chain);
       if (useWebhooks && this.provider.createAddressSubscription) {
-        try {
-          const sub = await this.provider.createAddressSubscription(
-            address,
-            account.chain as any,
-          );
-          dep.subscriptionId = sub.subscriptionId;
-          await em.save(dep);
-        } catch (e) {
-          this.logger.warn(`Subscription failed for ${address}: ${errMsg(e)}`);
+        // One subscription per ADDRESS — sibling watch rows (BNB +
+        // USDT_BEP20 on the same address) share the alert; Tatum fires
+        // once per inbound tx regardless of which asset arrives.
+        const covered = await em.exists(DepositAddress, {
+          where: { address, subscriptionId: Not(IsNull()) },
+        });
+        if (!covered) {
+          try {
+            const sub = await this.provider.createAddressSubscription(
+              address,
+              account.chain as any,
+            );
+            dep.subscriptionId = sub.subscriptionId;
+            await em.save(dep);
+          } catch (e) {
+            this.logger.warn(`Subscription failed for ${address}: ${errMsg(e)}`);
+          }
         }
       }
       return dep;
