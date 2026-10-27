@@ -82,10 +82,7 @@ export class ReconciliationService {
     const accounts = await this.custody.find();
     for (const acct of accounts) {
       const treasury = acct.treasuryAddress ?? acct.baseAddress;
-      const nativeCode =
-        acct.chain === 'POLYGON' ? 'POL'
-        : acct.chain === 'BSC' ? 'BNB'
-        : acct.chain;
+      const nativeCode = acct.chain === 'POLYGON' ? 'POL' : acct.chain;
       const floor = floors[acct.chain];
       if (!treasury || floor == null) continue;
       const asset = getAsset(nativeCode);

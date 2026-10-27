@@ -131,14 +131,14 @@ export const historyConfig = registerAs('history', () => {
         apiKey: process.env.HISTORY_POLYGON_API_KEY ?? '',
       },
       // BscScan requires an API key for every request — no keyless
-      // tier. Without HISTORY_BSC_API_KEY, BSC address history is
+      // tier. Without HISTORY_BNB_API_KEY, BNB address history is
       // unavailable and deltas stay pending+unattributed (fail-safe).
-      BSC: {
-        url: process.env.HISTORY_BSC_URL ??
+      BNB: {
+        url: process.env.HISTORY_BNB_URL ??
           (testnet
             ? 'https://api-testnet.bscscan.com/api'
             : 'https://api.bscscan.com/api'),
-        apiKey: process.env.HISTORY_BSC_API_KEY ?? '',
+        apiKey: process.env.HISTORY_BNB_API_KEY ?? '',
       },
     } as Record<string, { url: string; apiKey: string }>,
   };
@@ -199,7 +199,7 @@ export const treasuryConfig = registerAs('treasury', () => {
     gasFloor: {
       BTC: 0.0002, LTC: 0.005, ETH: 0.01,
       POLYGON: 0.5, SOL: 0.05, TRON: 100,
-      BSC: 0.005, DOGE: 50,
+      BNB: 0.005, DOGE: 50,
       ...gasFloor,
     } as Record<string, number>,
   };
@@ -231,8 +231,8 @@ export const confirmationsConfig = registerAs('confirmations', () => ({
   POLYGON: parseInt(process.env.CONFIRMATIONS_POLYGON ?? '64', 10),
   SOL: parseInt(process.env.CONFIRMATIONS_SOL ?? '32', 10),
   TRON: parseInt(process.env.CONFIRMATIONS_TRON ?? '20', 10),
-  // BSC ~3s blocks; 15 confs ≈ 45s and matches common exchange practice.
-  BSC: parseInt(process.env.CONFIRMATIONS_BSC ?? '15', 10),
+  // BNB Chain ~3s blocks; 15 confs ≈ 45s and matches common exchange practice.
+  BNB: parseInt(process.env.CONFIRMATIONS_BNB ?? '15', 10),
   // DOGE ~1min blocks; 6 confs ≈ 6min. Raise for production if the
   // client's risk appetite is lower (DOGE has had shallow reorgs).
   DOGE: parseInt(process.env.CONFIRMATIONS_DOGE ?? '6', 10),

@@ -36,7 +36,7 @@ mainnet traffic until the "Blocking" section is done.
       the ledger but hold broadcast for admin approval
 - [ ] **12. `CONFIRMATIONS_*`** — review vs chain finality at expected
       ticket sizes (current: BTC 2, LTC 4, ETH 12, POLYGON 64, SOL 32,
-      TRON 20, BSC 15, DOGE 6)
+      TRON 20, BNB 15, DOGE 6)
 - [ ] **13. `TREASURY_GAS_FLOOR`** — per-chain overrides if the defaults
       (`.env.example`) don't match treasury sizing
 - [ ] **14. `TREASURY_GAS_FLOOR` alerts routed** — `treasury.gas_low`

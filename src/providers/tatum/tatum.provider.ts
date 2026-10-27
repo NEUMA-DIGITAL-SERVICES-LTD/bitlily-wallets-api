@@ -24,12 +24,12 @@ const CHAIN_PATH: Record<Chain, string> = {
   POLYGON: 'polygon',
   SOL: 'solana',
   TRON: 'tron',
-  BSC: 'bsc',
+  BNB: 'bsc',
   DOGE: 'dogecoin',
 };
 
 /** Chains whose wallets expose an xpub for address derivation. */
-const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON', 'BSC', 'DOGE'];
+const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON', 'BNB', 'DOGE'];
 
 /**
  * Tatum's `currency` field for native sends — its enum doesn't always
@@ -37,9 +37,9 @@ const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON', 'BSC', 'DOGE
  */
 const TATUM_NATIVE_CURRENCY: Partial<Record<Chain, string>> = {
   POLYGON: 'MATIC',
-  // Tatum's BSC transaction schema predates the BNB rebrand — the
-  // currency enum is 'BSC', not 'BNB'.
-  BSC: 'BSC',
+  // Tatum's transaction schema predates the BNB rebrand — the currency
+  // enum is 'BSC', not 'BNB'.
+  BNB: 'BSC',
 };
 
 /**
@@ -48,6 +48,9 @@ const TATUM_NATIVE_CURRENCY: Partial<Record<Chain, string>> = {
  */
 const TATUM_CHAIN_CODE: Partial<Record<Chain, string>> = {
   POLYGON: 'MATIC',
+  // Token balance/send endpoints take Tatum's chain enum — 'BSC', not
+  // our chain name 'BNB'.
+  BNB: 'BSC',
 };
 
 /**
@@ -605,7 +608,7 @@ export class TatumProvider implements BlockchainProvider {
       const rate = await this.utxoFeeRate(asset.chain);
       return { asset: asset.code, fee: String((rate * 226) / 1e8), speed: 'medium' };
     }
-    if (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BSC') {
+    if (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BNB') {
       const { data } = await this.http.post(`/v3/${path}/gas`, {
         from: fromAddress ?? '0x000000000000000000000000000000000000dEaD',
         // No destination → estimate a typical EOA transfer (gasLimit
@@ -657,7 +660,7 @@ export class TatumProvider implements BlockchainProvider {
     const isEvm =
       params.asset.chain === 'ETH' ||
       params.asset.chain === 'POLYGON' ||
-      params.asset.chain === 'BSC';
+      params.asset.chain === 'BNB';
     const isToken = params.asset.type === 'token';
     if (isEvm && isToken) {
       // EVM gas estimate + margin — Tatum's default estimate can lag baseFee.
@@ -901,7 +904,7 @@ export class TatumProvider implements BlockchainProvider {
     POLYGON: { mainnet: 'polygon-mainnet', testnet: 'polygon-amoy' },
     SOL: { mainnet: 'solana-mainnet', testnet: 'solana-devnet' },
     TRON: { mainnet: 'tron-mainnet', testnet: 'tron-testnet' },
-    BSC: { mainnet: 'bsc-mainnet', testnet: 'bsc-testnet' },
+    BNB: { mainnet: 'bsc-mainnet', testnet: 'bsc-testnet' },
     DOGE: { mainnet: 'dogecoin-mainnet', testnet: 'dogecoin-testnet' },
   };
 
@@ -1011,7 +1014,7 @@ export class TatumProvider implements BlockchainProvider {
         return [];
       }
     }
-    if (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BSC') {
+    if (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BNB') {
       try {
         return await this.evmAddressTxs(address, asset, limit);
       } catch (e) {

@@ -16,8 +16,8 @@ const PATTERNS: Record<Chain, RegExp> = {
   SOL: /^[1-9A-HJ-NP-Za-km-z]{32,44}$/,
   // T + 33 base58 chars
   TRON: /^T[1-9A-HJ-NP-Za-km-z]{33}$/,
-  // BSC is EVM — same 0x-prefixed 20-byte hex as ETH/POLYGON.
-  BSC: /^0x[0-9a-fA-F]{40}$/,
+  // BNB Chain is EVM — same 0x-prefixed 20-byte hex as ETH/POLYGON.
+  BNB: /^0x[0-9a-fA-F]{40}$/,
   // base58check: mainnet D… (p2pkh) / 9… or A… (p2sh), testnet n…/2…/m….
   DOGE: /^[D9A2nm][1-9A-HJ-NP-Za-km-z]{25,33}$/,
 };

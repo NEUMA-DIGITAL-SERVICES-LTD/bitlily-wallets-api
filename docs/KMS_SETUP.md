@@ -66,10 +66,13 @@ the "silent break" this proof exists to prevent.
 
 ### Chain-code traps (verified live)
 
-- **`BSC`, not `BNB`.** In tatum-kms, `BNB` is Binance Chain (BEP-2,
-  `bnb1…` bech32) — a different chain entirely. BNB Smart Chain is `BSC`
-  everywhere: `generatemanagedwallet BSC`, `--chain=…,BSC,…`, and the
-  `/admin/custody` body. A `BNB` wallet signs nothing for this service.
+- **Two vocabularies: ours is `BNB`, Tatum's is `BSC`.** The API chain
+  code is `BNB` (the official BNB Chain name — what `/admin/custody`,
+  wallet views, and webhooks expose). Tatum's identifiers predate the
+  rebrand: `generatemanagedwallet BSC`, `--chain=…,BSC,…`, REST path
+  `bsc`, currency enum `BSC`. In tatum-kms specifically, `BNB` means
+  Binance Chain (BEP-2, `bnb1…` bech32) — a different chain entirely; a
+  `BNB` managed wallet signs nothing for this service.
 - **DOGE xpub serialization.** `generatemanagedwallet DOGE` emits an
   `xpub…` (Bitcoin mainnet version bytes) regardless of network. Tatum's
   testnet API rejects it ("must be a valid testnet DOGE xpub") — the same

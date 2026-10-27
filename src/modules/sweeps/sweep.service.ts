@@ -136,7 +136,7 @@ export class SweepService {
     // SPL tokens join the gas-pump path: a pooled SOL deposit address
     // holding only USDC can't pay the sweep fee — treasury tops it with
     // SOL (custody index 0) first, same as ERC-20 on EVM chains.
-    if (asset.type === 'token' && (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BSC' || asset.chain === 'SOL')) {
+    if (asset.type === 'token' && (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BNB' || asset.chain === 'SOL')) {
       const pumped = await this.gasPump(dep, asset, custody, record);
       if (pumped) {
         // Gas top-up was just sent — it must confirm on-chain before the
@@ -193,7 +193,7 @@ export class SweepService {
     // asset code (native code is 'POL'), so this lookup must map.
     const NATIVE_CODE: Record<string, string> = {
       ETH: 'ETH', POLYGON: 'POL', TRON: 'TRX', SOL: 'SOL',
-      BTC: 'BTC', LTC: 'LTC', BSC: 'BNB',
+      BTC: 'BTC', LTC: 'LTC',
     };
     const nativeAsset = getAsset(NATIVE_CODE[token.chain] ?? token.chain);
     if (!nativeAsset) throw new BadRequestException(`No native asset for ${token.chain}`);

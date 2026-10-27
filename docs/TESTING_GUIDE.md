@@ -131,7 +131,7 @@ count toward it.
 |---|---|---|
 | `address` | **yes** | The address to check |
 | `asset` | one of | Asset code — `USDT_TRON` resolves to chain TRON |
-| `chain` | one of | Raw chain code — `BTC, LTC, ETH, POLYGON, SOL, TRON, BSC, DOGE` |
+| `chain` | one of | Raw chain code — `BTC, LTC, ETH, POLYGON, SOL, TRON, BNB, DOGE` |
 
 **Pass `asset` or `chain` — not both required, but at least one.** Prefer
 `asset`: it matches the vocabulary of `POST /withdrawals` and `/fees/estimate`.
@@ -209,7 +209,7 @@ Each row carries `txid`, `confirmations` vs `requiredConfirmations`, `status`
 | Param | Required | What it's for |
 |---|---|---|
 | `externalUserId` | no | Which user's wallet this draw is attributed to. **Omit for an app-level treasury draw** — the debit lands on your app's `__app_level__` wallet (auto-provisioned). An explicit unknown id still 404s — wallets must exist first |
-| `asset` | **yes** | `BTC, LTC, ETH, POL, SOL, TRX, BNB, DOGE, USDT_TRON, USDT_ETH, USDC_ETH, USDC_MATIC, USDC_SOL, USDT_BSC` |
+| `asset` | **yes** | `BTC, LTC, ETH, POL, SOL, TRX, BNB, DOGE, USDT_TRON, USDT_ETH, USDC_ETH, USDC_MATIC, USDC_SOL, USDT_BEP20` |
 | `toAddress` | **yes** | Destination — format-validated **before** the debit; malformed → 400, nothing moves |
 | `amount` | **yes** | Positive decimal string, human units — `"0.05"`. Regex-strict (no `-5`, `.5`, `1e3`) |
 | `reference` | recommended | **Your dedupe key — consumed, never replayed.** Unique per send in your app. **Any** repeated reference → **409** (same payload or not — this API never returns an old send as if it were new). Omit it and every call sends fresh — effectively required in production |

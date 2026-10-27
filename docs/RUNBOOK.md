@@ -51,7 +51,7 @@ Check, in order:
 
 3. **Confirmations not reached**: tx row exists but `confirmations <
    required`. Per-chain thresholds live in `CONFIRMATIONS_<CHAIN>` env
-   (BTC 2, LTC 4, ETH 12, POLYGON 64, SOL 32, TRON 20, BSC 15, DOGE 6). Verify the txid
+   (BTC 2, LTC 4, ETH 12, POLYGON 64, SOL 32, TRON 20, BNB 15, DOGE 6). Verify the txid
    on a public explorer before assuming provider error.
 
 4. **Token contract mismatch**: the watch credits only the registered

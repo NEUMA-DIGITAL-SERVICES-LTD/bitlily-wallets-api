@@ -113,7 +113,7 @@ KMS request → four-eye verify → daemon sign → broadcast → txid resolve
 → required confirmations → ledger settle → outbox event.
 
 - **Natives (6/6)**: BTC, LTC, ETH, POL, SOL, TRX — all KMS-signed
-- **BSC + DOGE**: code-complete and custody-enrolled (KMS daemon polls
+- **BNB Chain + DOGE**: code-complete and custody-enrolled (KMS daemon polls
   both), but NOT yet loop-verified end-to-end on testnet — treat as
   unproven until a real deposit→credit→sweep/withdraw cycle passes
 - **Tokens (5/6)**: USDT_ETH, USDC_ETH, USDT_TRON, USDC_MATIC,
