@@ -51,7 +51,7 @@ Check, in order:
 
 3. **Confirmations not reached**: tx row exists but `confirmations <
    required`. Per-chain thresholds live in `CONFIRMATIONS_<CHAIN>` env
-   (BTC 2, LTC 4, ETH 12, POLYGON 64, SOL 32, TRON 20). Verify the txid
+   (BTC 2, LTC 4, ETH 12, POLYGON 64, SOL 32, TRON 20, BSC 15, DOGE 6). Verify the txid
    on a public explorer before assuming provider error.
 
 4. **Token contract mismatch**: the watch credits only the registered
@@ -129,7 +129,7 @@ docker run -d --name kms-restore-test \
   -v /restore-dir:/home/node/.tatumrc \
   tatumio/tatum-kms daemon \
     --externalUrl=http://127.0.0.1:9/never \
-    --chain=BTC,LTC,ETH,MATIC,TRON,SOL --period=10
+    --chain=BTC,LTC,ETH,MATIC,TRON,SOL,BSC,DOGE --period=10
 
 # 3. PASS = logs show the SAME signatureIds as prod:
 docker logs kms-restore-test | grep "for wallets"

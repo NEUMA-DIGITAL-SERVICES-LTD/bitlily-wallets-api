@@ -24,10 +24,12 @@ const CHAIN_PATH: Record<Chain, string> = {
   POLYGON: 'polygon',
   SOL: 'solana',
   TRON: 'tron',
+  BSC: 'bsc',
+  DOGE: 'dogecoin',
 };
 
 /** Chains whose wallets expose an xpub for address derivation. */
-const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON'];
+const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON', 'BSC', 'DOGE'];
 
 /**
  * Tatum's `currency` field for native sends — its enum doesn't always
@@ -35,6 +37,9 @@ const HD_CHAINS: Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'TRON'];
  */
 const TATUM_NATIVE_CURRENCY: Partial<Record<Chain, string>> = {
   POLYGON: 'MATIC',
+  // Tatum's BSC transaction schema predates the BNB rebrand — the
+  // currency enum is 'BSC', not 'BNB'.
+  BSC: 'BSC',
 };
 
 /**
@@ -279,7 +284,7 @@ export class TatumProvider implements BlockchainProvider {
       );
       return fromRaw(String(data.balance ?? data ?? '0'), asset.decimals);
     }
-    if (asset.chain === 'BTC' || asset.chain === 'LTC') {
+    if (asset.chain === 'BTC' || asset.chain === 'LTC' || asset.chain === 'DOGE') {
       const { data } = await this.http.get(`/v3/${path}/address/balance/${address}`);
       const incoming = parseFloat(data.incoming ?? '0');
       const outgoing = parseFloat(data.outgoing ?? '0');
@@ -372,7 +377,8 @@ export class TatumProvider implements BlockchainProvider {
     const path = CHAIN_PATH[chain];
     switch (chain) {
       case 'BTC':
-      case 'LTC': {
+      case 'LTC':
+      case 'DOGE': {
         const { data } = await this.http.get(`/v3/${path}/info`);
         return Number(data.blocks ?? data.headers ?? 0);
       }
@@ -402,7 +408,8 @@ export class TatumProvider implements BlockchainProvider {
   private normalizeTx(data: any, txid: string, chain: Chain, asset?: AssetDef): ProviderTx {
     switch (chain) {
       case 'BTC':
-      case 'LTC': {
+      case 'LTC':
+      case 'DOGE': {
         // Tatum returns outputs[].value in SATOSHIS (1000 = 0.00001 BTC).
         const outputs = (data.outputs ?? data.vout ?? []).map((o: any) => ({
           address: o.address ?? o.scriptPubKey?.addresses?.[0] ?? '',
@@ -581,7 +588,7 @@ export class TatumProvider implements BlockchainProvider {
     fromAddress?: string,
   ): Promise<FeeEstimate> {
     const path = CHAIN_PATH[asset.chain];
-    if (asset.chain === 'BTC' || asset.chain === 'LTC') {
+    if (asset.chain === 'BTC' || asset.chain === 'LTC' || asset.chain === 'DOGE') {
       if (fromAddress && toAddress) {
         const { data } = await this.http.post('/v3/blockchain/estimate', {
           chain: asset.chain,
@@ -598,7 +605,7 @@ export class TatumProvider implements BlockchainProvider {
       const rate = await this.utxoFeeRate(asset.chain);
       return { asset: asset.code, fee: String((rate * 226) / 1e8), speed: 'medium' };
     }
-    if (asset.chain === 'ETH' || asset.chain === 'POLYGON') {
+    if (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BSC') {
       const { data } = await this.http.post(`/v3/${path}/gas`, {
         from: fromAddress ?? '0x000000000000000000000000000000000000dEaD',
         // No destination → estimate a typical EOA transfer (gasLimit
@@ -647,7 +654,10 @@ export class TatumProvider implements BlockchainProvider {
     // from env via the caller (documented, testnet-only).
     // EVM token sends go through the custom-token endpoint — the chain
     // transaction endpoint only accepts Tatum's enumerated currencies.
-    const isEvm = params.asset.chain === 'ETH' || params.asset.chain === 'POLYGON';
+    const isEvm =
+      params.asset.chain === 'ETH' ||
+      params.asset.chain === 'POLYGON' ||
+      params.asset.chain === 'BSC';
     const isToken = params.asset.type === 'token';
     if (isEvm && isToken) {
       // EVM gas estimate + margin — Tatum's default estimate can lag baseFee.
@@ -670,11 +680,11 @@ export class TatumProvider implements BlockchainProvider {
       return this.sendResult(data, useKms);
     }
 
-    // UTXO chains (BTC/LTC) have a fundamentally different send schema:
+    // UTXO chains (BTC/LTC/DOGE) have a fundamentally different send schema:
     // inputs are explicit fromAddress/privateKey pairs and change must be
     // directed back to the sender. TESTNET_FROM_{chain} holds the address
     // matching TESTNET_PK_{chain}. Under KMS, signatureId replaces the key.
-    if (params.asset.chain === 'BTC' || params.asset.chain === 'LTC') {
+    if (params.asset.chain === 'BTC' || params.asset.chain === 'LTC' || params.asset.chain === 'DOGE') {
       // Under custody, UTXOs live at the treasury (index-0) address after
       // sweeps; env-mode falls back to the dev key's address.
       const fromAddr =
@@ -891,6 +901,8 @@ export class TatumProvider implements BlockchainProvider {
     POLYGON: { mainnet: 'polygon-mainnet', testnet: 'polygon-amoy' },
     SOL: { mainnet: 'solana-mainnet', testnet: 'solana-devnet' },
     TRON: { mainnet: 'tron-mainnet', testnet: 'tron-testnet' },
+    BSC: { mainnet: 'bsc-mainnet', testnet: 'bsc-testnet' },
+    DOGE: { mainnet: 'dogecoin-mainnet', testnet: 'dogecoin-testnet' },
   };
 
   async createAddressSubscription(address: string, chain: Chain): Promise<SubscriptionResult> {
@@ -999,7 +1011,7 @@ export class TatumProvider implements BlockchainProvider {
         return [];
       }
     }
-    if (asset.chain === 'ETH' || asset.chain === 'POLYGON') {
+    if (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BSC') {
       try {
         return await this.evmAddressTxs(address, asset, limit);
       } catch (e) {
@@ -1009,8 +1021,11 @@ export class TatumProvider implements BlockchainProvider {
         return [];
       }
     }
-    if (asset.chain !== 'BTC' && asset.chain !== 'LTC') return [];
-    const v4Chain = asset.chain === 'BTC' ? 'bitcoin' : 'litecoin';
+    if (asset.chain !== 'BTC' && asset.chain !== 'LTC' && asset.chain !== 'DOGE') return [];
+    const v4Chain =
+      asset.chain === 'BTC' ? 'bitcoin'
+      : asset.chain === 'LTC' ? 'litecoin'
+      : 'dogecoin';
     try {
       const { data } = await this.http.get(
         `/v4/data/blockchains/transaction/history/utxos` +

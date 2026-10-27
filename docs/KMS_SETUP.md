@@ -64,13 +64,27 @@ pair enrolls cleanly, deposits keep deriving from xpub A, and every
 withdrawal fails at broadcast because wallet B's keys can't spend them —
 the "silent break" this proof exists to prevent.
 
+### Chain-code traps (verified live)
+
+- **`BSC`, not `BNB`.** In tatum-kms, `BNB` is Binance Chain (BEP-2,
+  `bnb1…` bech32) — a different chain entirely. BNB Smart Chain is `BSC`
+  everywhere: `generatemanagedwallet BSC`, `--chain=…,BSC,…`, and the
+  `/admin/custody` body. A `BNB` wallet signs nothing for this service.
+- **DOGE xpub serialization.** `generatemanagedwallet DOGE` emits an
+  `xpub…` (Bitcoin mainnet version bytes) regardless of network. Tatum's
+  testnet API rejects it ("must be a valid testnet DOGE xpub") — the same
+  key material re-serialized as `tpub…` (version `0x043587cf`) is
+  accepted and derives identical keys. Enroll with the `tpub` form; the
+  pair proof still passes because it compares the 20-byte payload, not
+  the serialization.
+
 ## 4. Run the daemon (four-eye is mandatory on mainnet)
 
 ```bash
 docker run -d --env-file .env -v $HOME/.tatumrc:/home/node/.tatumrc \
   tatumio/tatum-kms daemon \
     --externalUrl=https://<service-host>/api/v1/kms/verify/<KMS_VERIFY_TOKEN> \
-    --chain=BTC,LTC,ETH,MATIC,TRON,SOL --period=15
+    --chain=BTC,LTC,ETH,MATIC,TRON,SOL,BSC,DOGE --period=15
 ```
 
 KMS GETs `{externalUrl}/{requestId}` before signing; the service returns 200

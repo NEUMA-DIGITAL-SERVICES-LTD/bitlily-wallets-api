@@ -27,6 +27,8 @@ const COINGECKO_IDS: Record<string, string> = {
   SOL: 'solana',
   TRX: 'tron',
   POL: 'polygon-ecosystem-token',
+  BNB: 'binancecoin',
+  DOGE: 'dogecoin',
 };
 
 const CACHE_MS = 60_000;

@@ -6,7 +6,7 @@
  * Only assets listed here are exposed by the service. To support a new
  * asset, add it here and verify provider support for that exact pair.
  */
-export type Chain = 'BTC' | 'LTC' | 'ETH' | 'POLYGON' | 'SOL' | 'TRON';
+export type Chain = 'BTC' | 'LTC' | 'ETH' | 'POLYGON' | 'SOL' | 'TRON' | 'BSC' | 'DOGE';
 export type AssetType = 'native' | 'token';
 
 export interface AssetDef {
@@ -36,6 +36,8 @@ export const ASSET_REGISTRY: AssetDef[] = [
   { code: 'SOL', chain: 'SOL', type: 'native', decimals: 9 },
   { code: 'TRX', chain: 'TRON', type: 'native', decimals: 6 },
   { code: 'POL', chain: 'POLYGON', type: 'native', decimals: 18 },
+  { code: 'BNB', chain: 'BSC', type: 'native', decimals: 18 },
+  { code: 'DOGE', chain: 'DOGE', type: 'native', decimals: 8 },
 
   // Stablecoins — confirm per-chain contract addresses against the signed-off
   // asset matrix before mainnet; testnet deployments use provider test assets.
@@ -60,6 +62,12 @@ export const ASSET_REGISTRY: AssetDef[] = [
   { code: 'USDC_SOL', chain: 'SOL', type: 'token', decimals: 6, contract: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     // Circle's official devnet USDC mint (faucet.circle.com).
     testnetContract: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' },
+  // BEP-20 USDT is 18 decimals — NOT 6 like TRC-20/ERC-20. Getting this
+  // wrong credits deposits 10^12x off.
+  { code: 'USDT_BSC', chain: 'BSC', type: 'token', decimals: 18, contract: '0x55d398326f99059fF775485246999027B3197955',
+    // Community test USDT on Chapel (BSC testnet) — widely used, but
+    // NOT an official Tether deployment. Verify before client sign-off.
+    testnetContract: '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd' },
 ];
 
 export function getAsset(code: string): AssetDef | undefined {
