@@ -1022,10 +1022,12 @@ export class TatumProvider implements BlockchainProvider {
       }
     }
     if (asset.chain !== 'BTC' && asset.chain !== 'LTC' && asset.chain !== 'DOGE') return [];
+    // v4 history enum uses 'doge' — NOT 'dogecoin' (the v3 path name).
+    // Verified live: dogecoin-testnet 400s, doge-testnet answers.
     const v4Chain =
       asset.chain === 'BTC' ? 'bitcoin'
       : asset.chain === 'LTC' ? 'litecoin'
-      : 'dogecoin';
+      : 'doge';
     try {
       const { data } = await this.http.get(
         `/v4/data/blockchains/transaction/history/utxos` +
