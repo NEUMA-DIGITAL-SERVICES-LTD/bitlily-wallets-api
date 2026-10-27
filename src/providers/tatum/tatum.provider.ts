@@ -5,6 +5,7 @@ import axios, { AxiosInstance } from 'axios';
 import { AssetDef, Chain } from '../../config/assets';
 import { parseErc20Transfers } from './evm-logs';
 import { errMsg } from '../../common/errors';
+import { fromUnits } from '../../common/units';
 import {
   BlockchainProvider,
   ChainAccountMaterial,
@@ -609,19 +610,24 @@ export class TatumProvider implements BlockchainProvider {
       return { asset: asset.code, fee: String((rate * 226) / 1e8), speed: 'medium' };
     }
     if (asset.chain === 'ETH' || asset.chain === 'POLYGON' || asset.chain === 'BNB') {
-      const { data } = await this.http.post(`/v3/${path}/gas`, {
-        from: fromAddress ?? '0x000000000000000000000000000000000000dEaD',
-        // No destination → estimate a typical EOA transfer (gasLimit
-        // 21000); contract destinations price higher when provided.
-        to: toAddress ?? '0x000000000000000000000000000000000000dEaD',
+      // The quote must equal what the send path will serialize: sends go
+      // through estimateEvmFee, which ceils gasPrice to whole gwei with a
+      // 1.5x margin — the raw wei estimate under-deducts and a
+      // balance-minus-fee sweep then fails broadcast on insufficient
+      // funds (seen live on BSC at the 1 gwei floor).
+      const fee = await this.estimateEvmFee(path, {
+        asset,
+        fromAccountId: '',
+        toAddress: toAddress ?? '0x000000000000000000000000000000000000dEaD',
         amount,
       });
-      const gasPrice = BigInt(String(data?.gasPrice ?? '0'));
-      const gasLimit = BigInt(String(data?.gasLimit ?? '21000'));
-      if (gasPrice <= 0n) {
+      if (!fee) {
         throw new Error(`Fee estimation unavailable for ${asset.code} — refusing to guess`);
       }
-      return { asset: asset.code, fee: String(Number(gasPrice * gasLimit) / 1e18) };
+      const feeWei = BigInt(fee.gasLimit) * BigInt(fee.gasPrice) * 1_000_000_000n;
+      // Exact integer formatting — Number/1e8-class division goes
+      // exponential below 1e-6 and breaks downstream decimal parsing.
+      return { asset: asset.code, fee: fromUnits(feeWei, 18) };
     }
     if (asset.chain === 'SOL') {
       // Protocol constant: 5000 lamports per signature. SPL transfers add
@@ -916,15 +922,26 @@ export class TatumProvider implements BlockchainProvider {
     }
     // ?type defaults to MAINNET — omitting it creates a mainnet alert on a
     // testnet key and vice versa (verified live against the enum).
-    const { data } = await this.http.post(`/v4/subscription?type=${this.network}`, {
-      type: 'ADDRESS_EVENT',
-      attr: {
-        address,
-        chain: TatumProvider.V4_CHAIN[chain][this.network],
-        url: ingressUrl,
-      },
-    });
-    return { subscriptionId: data.id ?? data.subscriptionId ?? '' };
+    // EVM addresses need TWO alerts: ADDRESS_EVENT only fires on native
+    // transfers — token transfers need INCOMING_FUNGIBLE_TX (verified
+    // live: a BEP-20 transfer to a watched address produced no event).
+    // UTXO chains carry no tokens — ADDRESS_EVENT covers everything.
+    const isEvm = chain === 'ETH' || chain === 'POLYGON' || chain === 'BNB';
+    const kinds = isEvm ? ['ADDRESS_EVENT', 'INCOMING_FUNGIBLE_TX'] : ['ADDRESS_EVENT'];
+    const ids: string[] = [];
+    for (const kind of kinds) {
+      const { data } = await this.http.post(`/v4/subscription?type=${this.network}`, {
+        type: kind,
+        attr: {
+          address,
+          chain: TatumProvider.V4_CHAIN[chain][this.network],
+          url: ingressUrl,
+        },
+      });
+      const id = data.id ?? data.subscriptionId;
+      if (id) ids.push(id);
+    }
+    return { subscriptionId: ids.join(',') };
   }
 
   /**

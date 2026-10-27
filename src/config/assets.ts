@@ -65,9 +65,10 @@ export const ASSET_REGISTRY: AssetDef[] = [
   // BEP-20 USDT is 18 decimals — NOT 6 like TRC-20/ERC-20. Getting this
   // wrong credits deposits 10^12x off.
   { code: 'USDT_BEP20', chain: 'BNB', type: 'token', decimals: 18, contract: '0x55d398326f99059fF775485246999027B3197955',
-    // Community test USDT on Chapel (BSC testnet) — widely used, but
-    // NOT an official Tether deployment. Verify before client sign-off.
-    testnetContract: '0x337610d27c682E347C9cD60BD4b3b107C9d34dDd' },
+    // Our own capped mintable test USDT on Chapel — deployed via Tatum's
+    // token/deploy (tx 0x447cd534…b4), minter = BNB treasury index 0.
+    // Faucet USDT pools run dry monthly; this removes the dependency.
+    testnetContract: '0xd039c358e1dd0a50c3fbf061f92f43e2b51257c1' },
 ];
 
 export function getAsset(code: string): AssetDef | undefined {

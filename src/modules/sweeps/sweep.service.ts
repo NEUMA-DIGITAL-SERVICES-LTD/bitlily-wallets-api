@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Like, Repository } from 'typeorm';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
 import { AddressPool } from '../../database/entities/address-pool.entity';
@@ -19,6 +19,7 @@ import {
   BlockchainProvider,
 } from '../../providers/provider.interface';
 import { errMsg } from '../../common/errors';
+import { fromUnits, toUnits } from '../../common/units';
 
 /**
  * Fund consolidation — the piece every custodial system needs and clients
@@ -116,15 +117,23 @@ export class SweepService {
 
     // In-flight guard — two concurrent sweeps would read the same balance
     // and double-send. A pending outbound row for this deposit is enough
-    // evidence a sweep is already underway.
+    // evidence a sweep is already underway. References are attempt-
+    // numbered (sweep:<dep>:a<n>) so a FAILED attempt doesn't permanently
+    // block retries under UQ_tx_reference, while concurrent racers
+    // compute the same attempt number and the unique index still dedupes.
     const inFlight = await this.txs.findOne({
-      where: { reference: `sweep:${dep.id}`, status: 'pending' },
+      where: { reference: Like(`sweep:${dep.id}:%`), status: 'pending' },
     });
     if (inFlight) {
       throw new BadRequestException(
         `Sweep already in flight for ${dep.address} (tx ${inFlight.id})`,
       );
     }
+    const attempt =
+      (await this.txs.count({
+        where: { reference: Like(`sweep:${dep.id}:%`), direction: 'outbound' },
+      })) + 1;
+    const sweepRef = `sweep:${dep.id}:a${attempt}`;
 
     const txids: string[] = [];
     const pendingKms: string[] = [];
@@ -150,13 +159,17 @@ export class SweepService {
     let amount = balance;
     if (asset.type !== 'token') {
       const est = await this.provider.estimateFee(asset, treasury, balance, dep.address);
-      const fee = parseFloat(est.fee);
-      amount = fee > 0 ? (parseFloat(balance) - fee).toFixed(asset.decimals) : balance;
-      if (parseFloat(amount) <= 0) {
+      // Integer base-unit subtraction — parseFloat can mint wei-level dust
+      // (0.1 - 0.000021 = 0.099979000000000012), pushing value+gas past
+      // the balance by a few wei and failing broadcast (seen live on BSC).
+      const sendUnits =
+        toUnits(balance, asset.decimals) - toUnits(est.fee ?? '0', asset.decimals);
+      if (sendUnits <= 0n) {
         throw new BadRequestException(
           `Balance ${balance} ${asset.code} does not cover estimated fee ${est.fee}`,
         );
       }
+      amount = fromUnits(sendUnits, asset.decimals);
     }
 
     const r = await this.provider.sendTransaction({
@@ -170,10 +183,10 @@ export class SweepService {
       sourceAddress: dep.address,
       toAddress: treasury,
       amount,
-      reference: `sweep:${dep.id}`,
+      reference: sweepRef,
     });
     record(r);
-    await this.recordOutbound(dep, asset, amount, treasury, `sweep:${dep.id}`, r);
+    await this.recordOutbound(dep, asset, amount, treasury, sweepRef, r);
     this.logger.log(`Sweep ${dep.address} → ${treasury}: ${amount} ${asset.code}`);
     return { txids, pendingKms, amount };
   }
