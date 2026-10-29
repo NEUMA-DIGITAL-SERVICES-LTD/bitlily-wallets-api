@@ -36,7 +36,7 @@ services:
       - .env
     command: daemon --externalUrl=http://api:3100/api/v1/kms/verify/${KMS_VERIFY_TOKEN} --chain=BTC,LTC,ETH,MATIC,TRON,SOL,BSC,DOGE --period=10
     volumes:
-      - ${KMS_WALLET_FILE}:/home/node/.tatumrc
+      - ${KMS_WALLET_FILE:?KMS_WALLET_FILE is unset — set it in .env to your .tatumrc path (see .env.example)}:/home/node/.tatumrc
     depends_on:
       - api
 

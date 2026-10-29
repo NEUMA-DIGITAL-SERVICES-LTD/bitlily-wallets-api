@@ -7,3 +7,7 @@ dist/
 coverage/
 *.tsbuildinfo
 scripts/.sol-funder.json
+
+# KMS wallet store — custody material, never committed
+.tatumrc
+kms/

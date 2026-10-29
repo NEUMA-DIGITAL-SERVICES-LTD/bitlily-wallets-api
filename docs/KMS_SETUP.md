@@ -33,12 +33,18 @@ use the corresponding `TATUM_KMS_*` vault env vars instead of plaintext.
 
 ## 3. Enroll managed wallets
 
+`.tatumrc` is a **directory** (the daemon writes `wallet.dat` inside it).
+`KMS_WALLET_FILE` in `.env` must point at a path on **this** machine — a
+recommended default is the project-relative `./kms/.tatumrc` (gitignored).
+Never reuse a path copied from someone else's `.env`: Docker will try to
+`mkdir` e.g. `C:\Users\<other-user>` and fail with "Access is denied".
+
 ```bash
-docker run -it --env-file .env -v $HOME/.tatumrc:/home/node/.tatumrc \
-  tatumio/tatum-kms generatemanagedwallet BTC
-# repeat: LTC ETH MATIC TRON
-docker run -it --env-file .env -v $HOME/.tatumrc:/home/node/.tatumrc \
-  tatumio/tatum-kms generatemanagedprivatekeybatch SOL 100
+# Linux/macOS: -v $KMS_WALLET_FILE:/home/node/.tatumrc
+# Windows compose hosts can just use the kms service:
+docker compose run --rm kms generatemanagedwallet BTC
+# repeat: LTC ETH MATIC TRON BSC DOGE   (BSC = BNB Chain, see trap below)
+docker compose run --rm kms generatemanagedprivatekeybatch SOL 100
 ```
 
 Each `generatemanagedwallet` prints `{signatureId, xpub}` — register via
@@ -84,10 +90,11 @@ the "silent break" this proof exists to prevent.
 ## 4. Run the daemon (four-eye is mandatory on mainnet)
 
 ```bash
-docker run -d --env-file .env -v $HOME/.tatumrc:/home/node/.tatumrc \
+docker run -d --env-file .env -v $KMS_WALLET_FILE:/home/node/.tatumrc \
   tatumio/tatum-kms daemon \
     --externalUrl=https://<service-host>/api/v1/kms/verify/<KMS_VERIFY_TOKEN> \
     --chain=BTC,LTC,ETH,MATIC,TRON,SOL,BSC,DOGE --period=15
+# or just: docker compose up -d kms   (compose already passes these)
 ```
 
 KMS GETs `{externalUrl}/{requestId}` before signing; the service returns 200
@@ -97,6 +104,22 @@ becoming arbitrary signing power.
 
 Note: KMS concatenates `{externalUrl}/{txId}` — the token must be a **path**
 segment (as shown), not a query param.
+
+## 4b. A new host / teammate onboarding
+
+Each machine that runs the KMS daemon needs **its own** `.tatumrc` +
+`TATUM_KMS_PASSWORD`, then the enrollment ceremony (steps 2–3) against its
+own wallet. Do not copy another host's `.env` wholesale — `KMS_WALLET_FILE`
+is machine-local, and the other machine's absolute path will fail with
+`mkdir …: Access is denied` (or worse, silently bind-mount an empty dir).
+
+- **Independent dev custody (default):** run the ceremony on the new host.
+  A fresh wallet means a different xpub → different treasury + different
+  derived deposit addresses than any other environment. That's correct for
+  isolated dev work.
+- **Shared staging/production custody:** the canonical `wallet.dat` +
+  password must travel through a secure channel (vault, encrypted handoff) —
+  never git, chat, or email. Everyone who holds the pair holds the funds.
 
 ## 5. Backup — the custody-critical step
 
