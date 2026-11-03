@@ -2,13 +2,18 @@
 
 Ordered by what must happen first. Items are gated — don't enable
 mainnet traffic until the "Blocking" section is done.
+**The full ordered procedure is `docs/MAINNET_CUTOVER.md` — this file is
+the gate summary.**
 
 ## Blocking (before any real funds)
 
 - [ ] **1. Client's own KMS host.** Deploy `tatumio/tatum-kms` on client
-      infrastructure, `generatemanagedwallet` per chain, enroll the six
-      signatureIds via `POST /api/v1/admin/custody`. Delete the test
+      infrastructure, `generatemanagedwallet` per chain (BTC LTC ETH
+      MATIC TRON BSC DOGE — 7 custody enrollments + SOL pool via
+      `generatemanagedprivatekeybatch`), enroll via
+      `POST /api/v1/admin/custody`. Delete the test
       `wallet.dat` host — never carry testnet keys into prod.
+      DOGE mainnet enrolls `xpub` (the `tpub` fix was testnet-only).
 - [ ] **2. `wallet.dat` backups.** Copy + `TATUM_KMS_PASSWORD` stored
       separately, encrypted, off-host. Restore drill procedure is in
       `docs/RUNBOOK.md` §4 — it was verified on testnet 2026-10-04.
