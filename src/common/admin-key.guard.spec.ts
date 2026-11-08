@@ -27,20 +27,22 @@ describe('AdminKeyGuard', () => {
         'service.adminAllowedIps': [],
       });
 
-    it('accepts the raw key whose sha256 hex is configured', () => {
-      expect(guard().canActivate(ctxOf('s3cret-admin-key'))).toBe(true);
+    it('accepts the sha256 hex digest of the configured key', () => {
+      expect(
+        guard().canActivate(ctxOf(sha256hex('s3cret-admin-key'))),
+      ).toBe(true);
     });
 
-    it('rejects a wrong key', () => {
-      expect(() => guard().canActivate(ctxOf('wrong'))).toThrow(
+    it('rejects a wrong digest', () => {
+      expect(() =>
+        guard().canActivate(ctxOf(sha256hex('wrong'))),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('rejects the raw key — callers send the digest, not the key', () => {
+      expect(() => guard().canActivate(ctxOf('s3cret-admin-key'))).toThrow(
         UnauthorizedException,
       );
-    });
-
-    it('rejects the hex digest itself — it is not the key', () => {
-      expect(() =>
-        guard().canActivate(ctxOf(sha256hex('s3cret-admin-key'))),
-      ).toThrow(UnauthorizedException);
     });
 
     it('rejects a missing header', () => {
@@ -58,12 +60,14 @@ describe('AdminKeyGuard', () => {
         'service.adminAllowedIps': [],
       });
 
-    it('still accepts the configured raw key', () => {
-      expect(guard().canActivate(ctxOf('plain-admin-key'))).toBe(true);
+    it('still accepts the digest of a raw-configured key', () => {
+      expect(
+        guard().canActivate(ctxOf(sha256hex('plain-admin-key'))),
+      ).toBe(true);
     });
 
-    it('rejects a wrong key', () => {
-      expect(() => guard().canActivate(ctxOf('nope'))).toThrow(
+    it('rejects a wrong digest', () => {
+      expect(() => guard().canActivate(ctxOf(sha256hex('nope')))).toThrow(
         UnauthorizedException,
       );
     });
@@ -75,9 +79,9 @@ describe('AdminKeyGuard', () => {
       'service.adminApiKeyHashes': [sha256hex('hashed-two')],
       'service.adminAllowedIps': [],
     });
-    expect(guard.canActivate(ctxOf('raw-one'))).toBe(true);
-    expect(guard.canActivate(ctxOf('hashed-two'))).toBe(true);
-    expect(() => guard.canActivate(ctxOf('neither'))).toThrow(
+    expect(guard.canActivate(ctxOf(sha256hex('raw-one')))).toBe(true);
+    expect(guard.canActivate(ctxOf(sha256hex('hashed-two')))).toBe(true);
+    expect(() => guard.canActivate(ctxOf(sha256hex('neither')))).toThrow(
       UnauthorizedException,
     );
   });
@@ -96,7 +100,7 @@ describe('AdminKeyGuard', () => {
     expect(() => guard.canActivate(ctxOf('not-hex'))).toThrow(
       UnauthorizedException,
     );
-    expect(guard.canActivate(ctxOf('real-key'))).toBe(true);
+    expect(guard.canActivate(ctxOf(sha256hex('real-key')))).toBe(true);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
@@ -106,10 +110,12 @@ describe('AdminKeyGuard', () => {
       'service.adminApiKeyHashes': [sha256hex('k')],
       'service.adminAllowedIps': ['203.0.113.0/24'],
     });
-    expect(() => guard.canActivate(ctxOf('k', '10.0.0.8'))).toThrow(
-      UnauthorizedException,
+    expect(() =>
+      guard.canActivate(ctxOf(sha256hex('k'), '10.0.0.8')),
+    ).toThrow(UnauthorizedException);
+    expect(guard.canActivate(ctxOf(sha256hex('k'), '203.0.113.9'))).toBe(
+      true,
     );
-    expect(guard.canActivate(ctxOf('k', '203.0.113.9'))).toBe(true);
   });
 
   it('fail-closed in production when neither var is set', () => {

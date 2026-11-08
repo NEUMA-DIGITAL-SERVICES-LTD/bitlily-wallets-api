@@ -48,8 +48,10 @@ docker compose run --rm kms generatemanagedprivatekeybatch SOL 100
 
 # pair proof per chain, then enroll:
 docker exec bitlily-kms node /opt/app/dist/index.js getaddress <signatureId> 0
+# X-Admin-Key takes the hex SHA-256 digest of the key (client-side hashing):
+#   node -e "console.log(require('crypto').createHash('sha256').update('RAW_KEY').digest('hex'))"
 curl -X POST https://<host>/api/v1/admin/custody \
-  -H "X-Admin-Key: <key>" -H "Content-Type: application/json" \
+  -H "X-Admin-Key: <sha256-hex>" -H "Content-Type: application/json" \
   -d '{"chain":"BTC","xpub":"…","signatureId":"…","kmsAddress":"…","treasuryAddress":"…"}'
 ```
 
