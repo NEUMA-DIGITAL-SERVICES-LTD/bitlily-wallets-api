@@ -23,6 +23,11 @@
  * `GET /admin/address-pool/stats` (free vs assigned).
  */
 const { execFileSync } = require('child_process');
+const { createHash } = require('crypto');
+
+// Client-side hashing: headers carry the sha256 digest of each env key —
+// env vars hold the RAW keys; the digest is what the API accepts.
+const digest = (s) => createHash('sha256').update(s).digest('hex');
 
 const args = Object.fromEntries(
   process.argv.slice(2).flatMap((a, i, arr) =>
@@ -43,8 +48,8 @@ if (!API_KEY || !ADMIN_KEY) {
 }
 
 const headers = {
-  'X-API-Key': API_KEY,
-  'X-Admin-Key': ADMIN_KEY,
+  'X-API-Key': digest(API_KEY),
+  'X-Admin-Key': digest(ADMIN_KEY),
   'Content-Type': 'application/json',
 };
 

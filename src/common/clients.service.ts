@@ -55,7 +55,7 @@ export class ClientsService {
     const presented = Buffer.from(key.toLowerCase(), 'hex');
     const sha = (s: string) => createHash('sha256').update(s).digest();
     const eq = (digest: Buffer) => timingSafeEqual(presented, digest);
-    const isDigest = (s: string) => /^[0-9a-f]{64}$/.test(s);
+    const isDigest = (s: string) => /^[0-9a-f]{64}$/i.test(s);
 
     for (const c of this.config.get<ApiClientConfig[]>('service.clients') ?? []) {
       if (eq(sha(c.apiKey))) {
@@ -71,7 +71,7 @@ export class ClientsService {
       if (!c.active) continue;
       const storedIsDigest = isDigest(c.apiKey);
       const stored = storedIsDigest
-        ? Buffer.from(c.apiKey, 'hex')
+        ? Buffer.from(c.apiKey.toLowerCase(), 'hex')
         : sha(c.apiKey);
       if (eq(stored)) {
         if (!storedIsDigest) {
