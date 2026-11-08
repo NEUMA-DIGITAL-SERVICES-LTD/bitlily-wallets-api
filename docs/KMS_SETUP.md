@@ -39,9 +39,13 @@ recommended default is the project-relative `./kms/.tatumrc` (gitignored).
 Never reuse a path copied from someone else's `.env`: Docker will try to
 `mkdir` e.g. `C:\Users\<other-user>` and fail with "Access is denied".
 
+The container runs as uid 1000 (`node`) — on Linux hosts the `.tatumrc`
+dir must be owned by that uid or `generatemanagedwallet` and the daemon
+both fail with EACCES (Docker auto-creates missing bind-mount dirs as
+root:root; Windows/WSL doesn't enforce uid, which masks this):
+
 ```bash
-# Linux/macOS: -v $KMS_WALLET_FILE:/home/node/.tatumrc
-# Windows compose hosts can just use the kms service:
+mkdir -p kms/.tatumrc && sudo chown -R 1000:1000 kms   # Linux hosts only
 docker compose run --rm kms generatemanagedwallet BTC
 # repeat: LTC ETH MATIC TRON BSC DOGE   (BSC = BNB Chain, see trap below)
 docker compose run --rm kms generatemanagedprivatekeybatch SOL 100
