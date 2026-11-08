@@ -1,5 +1,5 @@
 import { registerAs } from '@nestjs/config';
-import { isCidrEntry } from '../common/ip-match';
+import { normalizeAllowlistEntry } from '../common/ip-match';
 
 export interface ApiClientConfig {
   /** Tenant slug stamped on wallets.app_id — 'default' is the legacy
@@ -38,30 +38,35 @@ export const serviceConfig = registerAs('service', () => {
     adminApiKeyHashes: (process.env.ADMIN_API_KEY_HASHES ?? '').split(',').map((k) => k.trim().toLowerCase()).filter(Boolean),
     /** Optional CIDR list for X-Admin-Key callers — the key that mints
      *  spend-capable credentials should only work from ops egress.
-     *  CIDR notation required (a single host needs its /32 or /128 suffix);
-     *  a malformed entry aborts boot rather than silently never matching. */
+     *  Bare IPs are accepted and normalized to host routes (/32 or /128);
+     *  unparseable entries abort boot rather than silently never matching. */
     adminAllowedIps: (() => {
       const list = (process.env.ADMIN_ALLOWED_IPS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-      const bad = list.filter((e) => !isCidrEntry(e));
+      const bad = list.filter((e) => normalizeAllowlistEntry(e) === null);
       if (bad.length) {
         throw new Error(
-          `ADMIN_ALLOWED_IPS entries must be CIDRs (host → ".../32" or ".../128"). Bad: ${bad.join(', ')}`,
+          `ADMIN_ALLOWED_IPS entries must be IPs or CIDRs. Bad: ${bad.join(', ')}`,
         );
       }
-      return list;
+      return list.map((e) => normalizeAllowlistEntry(e)!);
     })(),
     /** Multi-tenant API clients. Each gets a key AND its own webhook
      *  endpoint — app A's deposit events must never reach app B's server.
      *  allowedIps follow the same CIDR-only rule as ADMIN_ALLOWED_IPS —
      *  a malformed entry aborts boot rather than silently never matching. */
     clients: clients.filter((c) => c?.slug && c?.apiKey).map((c) => {
-      const bad = (c.allowedIps ?? []).filter((e) => !isCidrEntry(e));
+      const bad = (c.allowedIps ?? []).filter(
+        (e) => normalizeAllowlistEntry(e) === null,
+      );
       if (bad.length) {
         throw new Error(
-          `API_CLIENTS[${c.slug}].allowedIps entries must be CIDRs (host → ".../32" or ".../128"). Bad: ${bad.join(', ')}`,
+          `API_CLIENTS[${c.slug}].allowedIps entries must be IPs or CIDRs. Bad: ${bad.join(', ')}`,
         );
       }
-      return c;
+      return {
+        ...c,
+        allowedIps: c.allowedIps?.map((e) => normalizeAllowlistEntry(e)!),
+      };
     }),
   };
 });

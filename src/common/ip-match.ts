@@ -3,9 +3,10 @@ import * as ipaddr from 'ipaddr.js';
 /**
  * IP allowlist matching for tenant/admin keys.
  *
- * Entries are CIDRs ONLY ('203.0.113.10/32', '2001:db8::/128'). A bare IP
- * never matches — the explicit prefix forces the author to say 'one host'
- * vs 'a range' instead of letting a typo'd host silently widen/narrow.
+ * Entries are CIDRs or bare IPs — a bare IP is unambiguous host shorthand
+ * ('203.0.113.10' → '/32', '2001:db8::1' → '/128'), the same convention
+ * firewalls and nginx allow rules use. Validation normalizes to canonical
+ * CIDRs at write/config time so stored lists always state the range.
  * Mixed v4/v6 is handled — a v4 request can never match a v6 rule.
  *
  * Fail-closed: a list is set but the request IP or any entry can't be
@@ -36,6 +37,21 @@ export function isCidrEntry(e: string): boolean {
   }
 }
 
+/** Canonicalize an allowlist entry: CIDRs pass through, bare IPs become
+ * host routes ('x'→'x/32', 'v6'→'v6/128'). Returns null for anything
+ * unparseable — callers fail loudly at write/config time. */
+export function normalizeAllowlistEntry(e: string): string | null {
+  const s = String(e).trim();
+  if (!s) return null;
+  if (isCidrEntry(s)) return s;
+  try {
+    const a = ipaddr.parse(s);
+    return a.kind() === 'ipv4' ? `${s}/32` : `${s}/128`;
+  } catch {
+    return null;
+  }
+}
+
 export function ipAllowed(
   reqIp: string | undefined,
   cidrs: readonly string[] | null | undefined,
@@ -57,8 +73,12 @@ export function ipAllowed(
       if (!range) return false;
       const r = ipaddr.parse(range);
       if (addr.kind() !== r.kind()) return false;
-      if (bits === undefined) return false; // bare IP — CIDR notation required
-      const n = parseInt(bits, 10);
+      const n =
+        bits === undefined
+          ? r.kind() === 'ipv4'
+            ? 32
+            : 128
+          : parseInt(bits, 10);
       return addr.kind() === 'ipv4'
         ? (addr as ipaddr.IPv4).match(r as ipaddr.IPv4, n)
         : (addr as ipaddr.IPv6).match(r as ipaddr.IPv6, n);
