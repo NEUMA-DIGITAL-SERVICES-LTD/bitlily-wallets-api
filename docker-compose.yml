@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/bitlily_crypto
+      DATABASE_URL: postgres://bitlily_wallets_api:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/bitlily_wallets_api
       PORT: 3100
     env_file:
       - .env
