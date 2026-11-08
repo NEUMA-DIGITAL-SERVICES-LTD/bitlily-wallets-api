@@ -5,7 +5,7 @@ import { Repository } from 'typeorm';
 import { timingSafeEqual } from 'crypto';
 import { ApiClient } from '../database/entities/api-client.entity';
 import { ApiClientConfig } from '../config/configuration';
-import { isCidrEntry } from './ip-match';
+import { normalizeAllowlistEntry } from './ip-match';
 import { errCode } from './errors';
 
 export interface ResolvedClient {
@@ -124,7 +124,7 @@ export class ClientsService {
     allowedIps?: string[];
     enforceBalance?: boolean;
   }): Promise<ApiClient> {
-    this.assertValidIps(input.allowedIps);
+    const allowedIps = this.normalizeIps(input.allowedIps);
     // Fail loudly on slug collisions — a raw 23505 surfaces as a cryptic
     // 500, and an env-defined slug would save fine yet stay shadowed
     // forever (env wins at merge). Both are 409s, not 500s.
@@ -143,7 +143,7 @@ export class ClientsService {
     const webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;
     try {
       const row = await this.repo.save(
-        this.repo.create({ ...input, apiKey, webhookSecret }),
+        this.repo.create({ ...input, allowedIps, apiKey, webhookSecret }),
       );
       this.cache = null;
       return row;
@@ -164,8 +164,7 @@ export class ClientsService {
     if (patch.active !== undefined) row.active = patch.active;
     if (patch.scopes !== undefined) row.scopes = patch.scopes;
     if (patch.allowedIps !== undefined) {
-      this.assertValidIps(patch.allowedIps);
-      row.allowedIps = patch.allowedIps;
+      row.allowedIps = this.normalizeIps(patch.allowedIps)!;
     }
     if (patch.enforceBalance !== undefined) {
       row.enforceBalance = patch.enforceBalance;
@@ -179,21 +178,22 @@ export class ClientsService {
   }
 
   /**
-   * Validate entries at write time — Swagger/JSON callers can send anything
-   * (observed: literal "string" placeholders). An unparseable entry stored
-   * would fail-closed at the guard and lock the client out of every IP.
+   * Validate AND canonicalize entries at write time — Swagger/JSON callers
+   * can send anything (observed: literal "string" placeholders). Bare IPs
+   * normalize to host routes; an unparseable entry is rejected here rather
+   * than stored to fail-closed at the guard and lock the client out.
    */
-  private assertValidIps(cidrs: string[] | null | undefined): void {
-    for (const e of cidrs ?? []) {
-      // CIDR notation required — a single host needs its explicit /32 or
-      // /128 suffix. Bare IPs are rejected so 'host vs range' is always
-      // stated, never implied.
-      if (!isCidrEntry(e)) {
+  private normalizeIps(entries: string[] | null | undefined): string[] | undefined {
+    if (entries === undefined) return undefined;
+    return entries.map((e) => {
+      const n = normalizeAllowlistEntry(e);
+      if (n === null) {
         throw new BadRequestException(
-          `allowedIps entry '${e}' is not a valid CIDR — a single host needs its explicit suffix (e.g. "203.0.113.10/32" or "2001:db8::1/128")`,
+          `allowedIps entry '${e}' is not a valid IP or CIDR (e.g. "203.0.113.10" or "203.0.113.0/24")`,
         );
       }
-    }
+      return n;
+    });
   }
 
   private async dbClients(fresh = false): Promise<ApiClient[]> {
