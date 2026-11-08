@@ -7,6 +7,7 @@
  * asset, add it here and verify provider support for that exact pair.
  */
 export type Chain = 'BTC' | 'LTC' | 'ETH' | 'POLYGON' | 'SOL' | 'TRON' | 'BNB' | 'DOGE';
+export const CHAINS: readonly Chain[] = ['BTC', 'LTC', 'ETH', 'POLYGON', 'SOL', 'TRON', 'BNB', 'DOGE'];
 export type AssetType = 'native' | 'token';
 
 export interface AssetDef {

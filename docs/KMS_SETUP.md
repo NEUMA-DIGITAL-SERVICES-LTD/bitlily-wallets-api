@@ -83,6 +83,10 @@ the "silent break" this proof exists to prevent.
   `bsc`, currency enum `BSC`. In tatum-kms specifically, `BNB` means
   Binance Chain (BEP-2, `bnb1…` bech32) — a different chain entirely; a
   `BNB` managed wallet signs nothing for this service.
+- **Same trap for Polygon: ours is `POLYGON`, KMS's is `MATIC`.**
+  `generatemanagedwallet MATIC` output enrolls as `chain:"POLYGON"` —
+  posting `chain:"MATIC"` sends an unmapped chain upstream and returns a
+  502 `PROVIDER_ERROR` (now a friendly 400 naming the mapping).
 - **DOGE xpub serialization.** `generatemanagedwallet DOGE` emits an
   `xpub…` (Bitcoin mainnet version bytes) regardless of network. Tatum's
   testnet API rejects it ("must be a valid testnet DOGE xpub") — the same

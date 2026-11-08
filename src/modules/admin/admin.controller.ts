@@ -26,6 +26,7 @@ import { ClientsService } from '../../common/clients.service';
 import { addressPayload } from '../../common/address-payload';
 import { Inject } from '@nestjs/common';
 import { BLOCKCHAIN_PROVIDER, BlockchainProvider } from '../../providers/provider.interface';
+import { CHAINS, Chain } from '../../config/assets';
 
 
 class CreateClientDto {
@@ -330,6 +331,15 @@ export class AdminController {
       throw new BadRequestException('xpub or baseAddress required');
     }
     const chain = dto.chain.toUpperCase();
+    // Fail friendly on KMS-arg names: tatum-kms takes MATIC/BSC but our
+    // canonical chains are POLYGON/BNB — an unmapped value otherwise
+    // reaches the provider and surfaces as an opaque upstream 404.
+    if (!CHAINS.includes(chain as Chain)) {
+      throw new BadRequestException(
+        `Unknown chain '${dto.chain}' — valid: ${CHAINS.join(', ')}. ` +
+          `KMS arg names differ: generatemanagedwallet MATIC → chain "POLYGON", BSC → "BNB".`,
+      );
+    }
 
     // Pair proof: the signatureId must derive the SAME index-0 address as
     // the enrolled xpub/baseAddress. Without this, a mismatched pair
