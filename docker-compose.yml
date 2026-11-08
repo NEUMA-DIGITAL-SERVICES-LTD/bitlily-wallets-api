@@ -2,9 +2,9 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: bitlily_crypto
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: bitlily_wallets_api
+      POSTGRES_USER: bitlily_wallets_api
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/bitlily_crypto
+      DATABASE_URL: postgres://bitlily_wallets_api:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/bitlily_wallets_api
       PORT: 3100
     env_file:
       - .env
