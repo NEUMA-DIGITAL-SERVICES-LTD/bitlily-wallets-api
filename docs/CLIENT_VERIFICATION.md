@@ -4,7 +4,12 @@ Run these in order against the staging environment. Everything below is
 expected to pass; anything that doesn't is a finding, not a retry.
 
 Base URL: `https://<staging-host>/api/v1` — all calls need header
-`X-API-Key: <your tenant key>`.
+`X-API-Key: <sha256 hex of your tenant key>` (client-side hashing — the
+digest is the credential). Export it once:
+
+```bash
+KEY=$(node -e "console.log(require('crypto').createHash('sha256').update('YOUR_RAW_KEY').digest('hex'))")
+```
 
 The client-facing wallet surface is exactly **two** routes, keyed by
 **your** `externalUserId` — the service-generated `id` is internal and

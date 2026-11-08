@@ -473,8 +473,9 @@ export class AdminController {
   @Post('clients')
   @ApiOperation({
     summary:
-      'Register a new API client (tenant). Returns apiKey + webhookSecret ' +
-      'ONCE — they are not retrievable afterwards.',
+      'Register a new API client (tenant). Returns the RAW apiKey + ' +
+      'webhookSecret ONCE — only the key\'s sha256 digest is stored. ' +
+      'Callers authenticate with sha256(rawKey) as X-API-Key.',
   })
   @ApiCreatedResponse({ type: ClientCredentialsDto })
   async createClient(@Body() dto: CreateClientDto) {
