@@ -47,18 +47,23 @@ async function bootstrap() {
     }),
   );
 
-  const docs = new DocumentBuilder()
-    .setTitle('Bitlily Crypto Service')
-    .setDescription(
-      'Multi-chain crypto infrastructure gateway: deposit addresses, ' +
-        'deposit monitoring, withdrawals, fee estimation. Blockchain I/O ' +
-        'abstracted behind a provider layer (currently Tatum).',
-    )
-    .setVersion('0.1.0')
-    .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, 'x-api-key')
-    .addApiKey({ type: 'apiKey', name: 'X-Admin-Key', in: 'header' }, 'x-admin-key')
-    .build();
-  SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, docs));
+  // Swagger docs are gated by SWAGGER_ENABLED (default: off in production).
+  // The OpenAPI doc is a full route map — every endpoint shape, for any
+  // unauthenticated scanner. When off, /docs and /docs-json 404.
+  if (config.get<boolean>('service.swaggerEnabled')) {
+    const docs = new DocumentBuilder()
+      .setTitle('Bitlily Crypto Service')
+      .setDescription(
+        'Multi-chain crypto infrastructure gateway: deposit addresses, ' +
+          'deposit monitoring, withdrawals, fee estimation. Blockchain I/O ' +
+          'abstracted behind a provider layer (currently Tatum).',
+      )
+      .setVersion('0.1.0')
+      .addApiKey({ type: 'apiKey', name: 'X-API-Key', in: 'header' }, 'x-api-key')
+      .addApiKey({ type: 'apiKey', name: 'X-Admin-Key', in: 'header' }, 'x-admin-key')
+      .build();
+    SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, docs));
+  }
 
   const port = config.get<number>('service.port') ?? 3100;
   await app.listen(port);

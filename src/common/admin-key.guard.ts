@@ -13,9 +13,13 @@ import { ipAllowed } from './ip-match';
  * Privilege separation for ops endpoints (custody enrollment, withdrawal
  * approval). The main app's X-API-Key is held by Bitlily's backend and used
  * on every deposit check — it will leak before an ops key does. Admin
- * endpoints therefore require ADMIN_API_KEYS (raw) or ADMIN_API_KEY_HASHES
- * (hex SHA-256 digests — preferred: a leaked .env yields unusable digests)
- * when configured.
+ * endpoints therefore require an admin key when configured.
+ *
+ * Client-side hashing (client requirement): callers send the hex SHA-256
+ * DIGEST of their key, compared directly to ADMIN_API_KEY_HASHES — or to
+ * sha256() of each raw key in ADMIN_API_KEYS. Consequence: the digest IS
+ * the credential and is replayable if .env leaks — the theft bound lives
+ * in ADMIN_ALLOWED_IPS + rotation, not in at-rest secrecy.
  *
  * Fail-closed posture: when neither is set, admin endpoints refuse
  * ALL callers in production (TATUM_USE_KMS=true or NODE_ENV=production) and
@@ -39,9 +43,8 @@ export class AdminKeyGuard implements CanActivate {
       this.config.get<string[]>('service.adminApiKeyHashes') ?? [];
 
     if (adminKeys.length || keyHashes.length) {
-      // Everything normalizes to a SHA-256 digest: configured hashes match
-      // directly, raw keys hash on the fly — one constant-time comparison
-      // path either way. Callers always send the raw key.
+      // Callers present the hex digest itself — one constant-time compare
+      // against stored digests (plus sha256 of any raw env keys).
       const digests = keyHashes
         .filter((h) => {
           if (/^[0-9a-f]{64}$/i.test(h)) return true;
@@ -53,12 +56,12 @@ export class AdminKeyGuard implements CanActivate {
           }
           return false;
         })
-        .map((h) => Buffer.from(h, 'hex'));
+        .map((h) => Buffer.from(h.toLowerCase(), 'hex'));
       for (const raw of adminKeys) {
         digests.push(createHash('sha256').update(raw).digest());
       }
-      const provided = key
-        ? createHash('sha256').update(key).digest()
+      const provided = /^[0-9a-f]{64}$/i.test(key)
+        ? Buffer.from(key.toLowerCase(), 'hex')
         : null;
       const ok =
         !!provided && digests.some((d) => timingSafeEqual(d, provided));

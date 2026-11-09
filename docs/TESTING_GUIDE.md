@@ -20,11 +20,13 @@ tenant's data with your key.
 
 | Header | Where the value lives | Scope |
 |---|---|---|
-| `X-API-Key` | `API_CLIENTS` in `.env` (env clients), or returned once by `POST /admin/clients` (db clients) | All routes. Determines `appId` and scopes. |
-| `X-Admin-Key` | `ADMIN_API_KEYS` (raw) or `ADMIN_API_KEY_HASHES` (hex SHA-256 of the keys — preferred; send the raw key either way) | `/admin/*` and `/kms/*` routes only — ops tooling, never given to app users |
+| `X-API-Key` | `API_CLIENTS`/`SERVICE_API_KEYS` in `.env` (env clients), or returned once RAW by `POST /admin/clients` (db clients). **Send the hex digest** (`sha256(key)`) — client-side hashing; the digest is the credential | All routes. Determines `appId` and scopes. |
+| `X-Admin-Key` | `ADMIN_API_KEYS` (raw key — its digest matches) or `ADMIN_API_KEY_HASHES` (hex SHA-256 digests — preferred). **Send the hex digest** (`sha256(key)`), not the key — client-side hashing; the digest is the credential | `/admin/*` and `/kms/*` routes only — ops tooling, never given to app users |
 
-In Swagger: click **Authorize**, paste the tenant key into `x-api-key` and the
-admin key into `x-admin-key`. Both stay set for the session.
+In Swagger: click **Authorize**, paste the tenant key's **sha256 digest**
+into `x-api-key` and the admin key's **sha256 digest** into `x-admin-key`
+(client-side hashing — send the 64-char hex, not the key). Both stay set
+for the session.
 
 **Scopes:** a key's `scopes` array gates what it may call. `["wallet"]` = full
 tenant access; `["read"]` = read-only shared endpoints. Calls outside scope

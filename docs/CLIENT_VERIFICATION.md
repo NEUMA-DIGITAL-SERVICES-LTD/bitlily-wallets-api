@@ -4,7 +4,12 @@ Run these in order against the staging environment. Everything below is
 expected to pass; anything that doesn't is a finding, not a retry.
 
 Base URL: `https://<staging-host>/api/v1` — all calls need header
-`X-API-Key: <your tenant key>`.
+`X-API-Key: <sha256 hex of your tenant key>` (client-side hashing — the
+digest is the credential). Export it once:
+
+```bash
+KEY=$(node -e "console.log(require('crypto').createHash('sha256').update('YOUR_RAW_KEY').digest('hex'))")
+```
 
 The client-facing wallet surface is exactly **two** routes, keyed by
 **your** `externalUserId` — the service-generated `id` is internal and
@@ -247,13 +252,14 @@ param) can widen it past your key's app.
 ## 8. Registering additional apps
 
 `POST /admin/clients` mints new tenant keys — it's **admin-gated**
-(requires `X-Admin-Key`, held by platform ops). During staging, request new
+(requires `X-Admin-Key`, held by platform ops — send the hex SHA-256
+digest of the key, not the key itself). During staging, request new
 apps through ops; at handover the admin key transfers to you and this is
 self-serve:
 
 ```bash
 curl -X POST $BASE/admin/clients \
-  -H "X-API-Key: <ops key>" -H "X-Admin-Key: <admin>" \
+  -H "X-API-Key: <ops key>" -H "X-Admin-Key: <sha256-hex>" \
   -H "Content-Type: application/json" \
   -d '{"slug":"newapp","webhookUrl":"https://app.io/hooks","scopes":["wallet"],"allowedIps":["203.0.113.0/24"]}'
 ```

@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable } from '@nestjs/comm
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { ApiClient } from '../database/entities/api-client.entity';
 import { ApiClientConfig } from '../config/configuration';
 import { normalizeAllowlistEntry } from './ip-match';
@@ -43,14 +43,22 @@ export class ClientsService {
     private readonly config: ConfigService,
   ) {}
 
+  /**
+   * Resolve an X-API-Key to its tenant. Client-side hashing: callers send
+   * the hex SHA-256 of their key — the digest IS the credential (replayable
+   * if the store leaks; ADMIN/tiered allowlists + rotation bound that).
+   * Env keys compare via sha256(stored); db rows store digests — legacy
+   * raw `ck_` rows self-migrate to the digest on first successful auth.
+   */
   async resolve(key: string): Promise<ResolvedClient | null> {
-    if (!key) return null;
-    const eq = (candidate: string) =>
-      candidate.length === key.length &&
-      timingSafeEqual(Buffer.from(key), Buffer.from(candidate));
+    if (!/^[0-9a-f]{64}$/i.test(key)) return null;
+    const presented = Buffer.from(key.toLowerCase(), 'hex');
+    const sha = (s: string) => createHash('sha256').update(s).digest();
+    const eq = (digest: Buffer) => timingSafeEqual(presented, digest);
+    const isDigest = (s: string) => /^[0-9a-f]{64}$/i.test(s);
 
     for (const c of this.config.get<ApiClientConfig[]>('service.clients') ?? []) {
-      if (eq(c.apiKey)) {
+      if (eq(sha(c.apiKey))) {
         return {
           appId: c.slug,
           scopes: ['wallet'],
@@ -60,7 +68,18 @@ export class ClientsService {
       }
     }
     for (const c of await this.dbClients()) {
-      if (c.active && eq(c.apiKey)) {
+      if (!c.active) continue;
+      const storedIsDigest = isDigest(c.apiKey);
+      const stored = storedIsDigest
+        ? Buffer.from(c.apiKey.toLowerCase(), 'hex')
+        : sha(c.apiKey);
+      if (eq(stored)) {
+        if (!storedIsDigest) {
+          // Lazy migration: legacy raw row → digest, once, on first auth.
+          void this.repo
+            .update(c.id, { apiKey: stored.toString('hex') })
+            .catch(() => undefined);
+        }
         return {
           appId: c.slug,
           scopes: c.scopes?.length ? c.scopes : ['wallet'],
@@ -70,7 +89,7 @@ export class ClientsService {
       }
     }
     for (const k of this.config.get<string[]>('service.apiKeys') ?? []) {
-      if (eq(k)) {
+      if (eq(sha(k))) {
         return { appId: 'default', scopes: ['wallet'], enforceBalance: true };
       }
     }
@@ -142,11 +161,18 @@ export class ClientsService {
     const apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;
     try {
+      // Store the digest (callers present sha256 of the key); the raw key
+      // is revealed in this response only — never stored, never re-shown.
       const row = await this.repo.save(
-        this.repo.create({ ...input, allowedIps, apiKey, webhookSecret }),
+        this.repo.create({
+          ...input,
+          allowedIps,
+          apiKey: createHash('sha256').update(apiKey).digest('hex'),
+          webhookSecret,
+        }),
       );
       this.cache = null;
-      return row;
+      return { ...row, apiKey };
     } catch (e) {
       // Race window: the check above passed, but a concurrent create won.
       if (errCode(e) === '23505') {
@@ -169,12 +195,16 @@ export class ClientsService {
     if (patch.enforceBalance !== undefined) {
       row.enforceBalance = patch.enforceBalance;
     }
+    let rawKey: string | null = null;
     if (rotate) {
-      row.apiKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+      rawKey = `ck_${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+      row.apiKey = createHash('sha256').update(rawKey).digest('hex');
       row.webhookSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`;
     }
     this.cache = null;
-    return this.repo.save(row);
+    const saved = await this.repo.save(row);
+    // Rotated raw key surfaces once in this response, like create().
+    return rawKey ? { ...saved, apiKey: rawKey } : saved;
   }
 
   /**

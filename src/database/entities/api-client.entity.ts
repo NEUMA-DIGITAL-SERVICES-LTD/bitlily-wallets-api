@@ -10,8 +10,10 @@ import {
 /**
  * Runtime-registered API client (tenant). Env API_CLIENTS still resolve
  * (ops-seeded entries); this table is for apps added without a redeploy.
- * apiKey is a credential — treated like a password in responses (returned
- * once at creation, masked everywhere else).
+ * apiKey stores the hex SHA-256 digest of the credential — callers present
+ * the digest (client-side hashing); the raw key is revealed once at
+ * create/rotate and never stored. The digest is the credential — treat
+ * this column accordingly.
  */
 @Entity('api_clients')
 export class ApiClient {
