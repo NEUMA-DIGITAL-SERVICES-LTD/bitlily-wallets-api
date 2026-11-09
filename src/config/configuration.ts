@@ -30,6 +30,13 @@ export const serviceConfig = registerAs('service', () => {
     webhookRateLimitPerMinute: parseInt(process.env.WEBHOOK_RATE_LIMIT_PER_MINUTE ?? '120', 10),
     port: parseInt(process.env.PORT ?? '3100', 10),
     env: process.env.NODE_ENV ?? 'development',
+    /** /docs (Swagger UI + OpenAPI JSON). Unset → off in production, on in
+     *  dev; explicit SWAGGER_ENABLED=true|false overrides either way — the
+     *  schema leaks every route shape to unauthenticated scanners. */
+    swaggerEnabled:
+      process.env.SWAGGER_ENABLED !== undefined
+        ? process.env.SWAGGER_ENABLED === 'true'
+        : (process.env.NODE_ENV ?? 'development') !== 'production',
     apiKeys: (process.env.SERVICE_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
     adminApiKeys: (process.env.ADMIN_API_KEYS ?? '').split(',').map((k) => k.trim()).filter(Boolean),
     /** Hex SHA-256 digests of admin keys — preferred over storing raw
