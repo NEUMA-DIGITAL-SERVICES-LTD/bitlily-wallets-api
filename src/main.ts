@@ -53,19 +53,31 @@ async function bootstrap() {
   // TATUM_NETWORK=mainnet). Scream at boot instead of degrading silently.
   {
     const network = config.get<string>('tatum.network') ?? 'testnet';
-    const tronGrid = config.get<string>('history.tronGridUrl') ?? '';
-    const testnetHost = /shasta|nile/i.test(tronGrid);
-    if (network === 'mainnet' && testnetHost) {
-      console.error(
-        `FATAL CONFIG: TRONGRID_URL=${tronGrid} is a TESTNET indexer but ` +
-          `TATUM_NETWORK=mainnet — TRON deposit attribution will never resolve ` +
-          `(deltas stay pending). Unset it or use https://api.trongrid.io.`,
-      );
-    } else if (network !== 'mainnet' && !testnetHost) {
-      console.warn(
-        `CONFIG WARNING: TRONGRID_URL=${tronGrid} looks like a MAINNET indexer ` +
-          `but TATUM_NETWORK=${network} — TRON deposit attribution will never resolve.`,
-      );
+    const testnetMarker = /shasta|nile|sepolia|amoy|testnet|devnet|holesky|goerli/i;
+    const urls: Record<string, string> = {
+      TRONGRID_URL: config.get<string>('history.tronGridUrl') ?? '',
+      SOLANA_RPC_URL: config.get<string>('tatum.solanaRpcUrl') ?? '',
+      ...Object.fromEntries(
+        Object.entries(
+          config.get<Record<string, { url: string }>>('history.evm') ?? {},
+        ).map(([chain, c]) => [`HISTORY_${chain}_URL`, c?.url ?? '']),
+      ),
+    };
+    for (const [env, url] of Object.entries(urls)) {
+      if (!url) continue;
+      if (network === 'mainnet' && testnetMarker.test(url)) {
+        console.error(
+          `FATAL CONFIG: ${env}=${url} is a TESTNET endpoint but ` +
+            `TATUM_NETWORK=mainnet — deposit attribution on that chain will ` +
+            `never resolve (deltas stay pending). Unset it for the ` +
+            `network-matched default.`,
+        );
+      } else if (network !== 'mainnet' && !testnetMarker.test(url)) {
+        console.warn(
+          `CONFIG WARNING: ${env}=${url} looks like a MAINNET endpoint ` +
+            `but TATUM_NETWORK=${network} — deposit attribution may never resolve.`,
+        );
+      }
     }
   }
 
