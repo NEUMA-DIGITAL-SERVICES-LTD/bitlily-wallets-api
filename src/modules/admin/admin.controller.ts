@@ -175,6 +175,7 @@ export class ClientListItemDto {
   @ApiProperty({ description: 'Last 4 chars of the API key — the full key is never listed' }) keyTail: string;
   @ApiProperty({ type: [String] }) scopes: string[];
   @ApiProperty() webhookConfigured: boolean;
+  @ApiPropertyOptional({ nullable: true }) webhookUrl?: string | null;
   @ApiPropertyOptional({ nullable: true, type: [String] }) allowedIps?: string[] | null;
   @ApiProperty() enforceBalance: boolean;
   @ApiProperty() active: boolean;
@@ -186,6 +187,7 @@ export class ClientCredentialsDto {
   @ApiPropertyOptional({ nullable: true, description: 'Present ONLY on create or after rotate:true — never re-emitted otherwise' }) apiKey?: string | null;
   @ApiPropertyOptional({ nullable: true, description: 'Same lifecycle as apiKey' }) webhookSecret?: string | null;
   @ApiProperty({ type: [String] }) scopes: string[];
+  @ApiPropertyOptional({ nullable: true }) webhookUrl?: string | null;
   @ApiPropertyOptional({ nullable: true, type: [String] }) allowedIps?: string[] | null;
   @ApiProperty() enforceBalance: boolean;
   @ApiPropertyOptional() active?: boolean;
@@ -462,8 +464,8 @@ export class AdminController {
   @Get('clients')
   @ApiOperation({
     summary:
-      'List registered API clients (tenants) — slug, name, webhook URL ' +
-      'presence. Keys never leave this endpoint.',
+      'List registered API clients (tenants) — slug, name, webhook URL. ' +
+      'Keys never leave this endpoint.',
   })
   @ApiOkResponse({ type: [ClientListItemDto] })
   listClients() {
@@ -486,6 +488,7 @@ export class AdminController {
       apiKey: row.apiKey,
       webhookSecret: row.webhookSecret,
       scopes: row.scopes,
+      webhookUrl: row.webhookUrl,
       allowedIps: row.allowedIps,
       enforceBalance: row.enforceBalance,
     };
@@ -511,6 +514,7 @@ export class AdminController {
       apiKey: minted ? row.apiKey : null,
       webhookSecret: minted ? row.webhookSecret : null,
       scopes: row.scopes,
+      webhookUrl: row.webhookUrl,
       allowedIps: row.allowedIps,
       enforceBalance: row.enforceBalance,
       active: row.active,

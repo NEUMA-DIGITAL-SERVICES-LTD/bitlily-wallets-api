@@ -47,6 +47,28 @@ async function bootstrap() {
     }),
   );
 
+  // Indexer↔network sanity: a testnet explorer URL on a mainnet deploy
+  // returns EMPTY history for every address — deposits stay pending and
+  // unattributed with NO error logged (observed live: shasta URL under
+  // TATUM_NETWORK=mainnet). Scream at boot instead of degrading silently.
+  {
+    const network = config.get<string>('tatum.network') ?? 'testnet';
+    const tronGrid = config.get<string>('history.tronGridUrl') ?? '';
+    const testnetHost = /shasta|nile/i.test(tronGrid);
+    if (network === 'mainnet' && testnetHost) {
+      console.error(
+        `FATAL CONFIG: TRONGRID_URL=${tronGrid} is a TESTNET indexer but ` +
+          `TATUM_NETWORK=mainnet — TRON deposit attribution will never resolve ` +
+          `(deltas stay pending). Unset it or use https://api.trongrid.io.`,
+      );
+    } else if (network !== 'mainnet' && !testnetHost) {
+      console.warn(
+        `CONFIG WARNING: TRONGRID_URL=${tronGrid} looks like a MAINNET indexer ` +
+          `but TATUM_NETWORK=${network} — TRON deposit attribution will never resolve.`,
+      );
+    }
+  }
+
   // Swagger docs are gated by SWAGGER_ENABLED (default: off in production).
   // The OpenAPI doc is a full route map — every endpoint shape, for any
   // unauthenticated scanner. When off, /docs and /docs-json 404.
