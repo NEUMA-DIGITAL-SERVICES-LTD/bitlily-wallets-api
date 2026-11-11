@@ -364,8 +364,13 @@ export class DepositPollerService {
           select: ['txid'],
         })).map((r) => r.txid),
       );
+      // Exact-match must ALSO exclude recorded txids (seen live: a credited
+      // 5.0 TRX tx exact-matched a new 5.0 delta, shadowing an unrecorded
+      // same-amount tx — the stale-hit path then folded the uncredited 5.0
+      // into the creditedAmount baseline with no row and no webhook).
       const hit =
         candidates.find((t) =>
+          !knownTxids.has(t.txid) &&
           ours(t).some(
             (o) => Math.abs(parseFloat(o.amount) - delta) < 1e-8,
           ),
@@ -451,10 +456,12 @@ export class DepositPollerService {
             // delta; once attributed it is the tx's outputs to us.
             existing.amount = hitAmount ?? freshDelta.toFixed(asset.decimals);
           }
-          if (existing.status === 'confirmed') {
+          if (existing.status === 'confirmed' || existing.status === 'finalized') {
             // Already credited — sync the marker or this delta re-detects
             // every poll forever (seen live: reactivated row whose tx had
-            // confirmed while retired).
+            // confirmed while retired). A 'finalized' row must never fall
+            // through to the confirm branch below — that demotes its status
+            // and re-runs the credit path.
             if (parseFloat(fresh.creditedAmount) < parseFloat(observed)) {
               fresh.creditedAmount = observed;
               await m.save(fresh);
