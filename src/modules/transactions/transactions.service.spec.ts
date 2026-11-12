@@ -2,6 +2,7 @@ import { BadGatewayException } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
+import { LedgerEntry } from '../../database/entities/ledger-entry.entity';
 
 /**
  * The withdrawal path's accounting invariants: debit lands before broadcast,
@@ -616,16 +617,18 @@ describe('TransactionsService.manualCredit', () => {
   let notifier: any;
   let existingTx: any;
   let freshDep: any;
+  let ledgerEntry: any;
 
   beforeEach(() => {
     existingTx = null;
+    ledgerEntry = null;
     freshDep = { ...dep, creditedAmount: '5.000007' };
     m = {
       save: jest.fn(async (_e: any, o?: any) => o ?? _e),
       create: jest.fn((_e: any, o: any) => ({ ...o })),
       update: jest.fn(),
       findOne: jest.fn(async (e: any) =>
-        e === DepositAddress ? freshDep : existingTx,
+        e === DepositAddress ? freshDep : e === LedgerEntry ? ledgerEntry : existingTx,
       ),
     };
     provider = {
@@ -667,8 +670,22 @@ describe('TransactionsService.manualCredit', () => {
 
   it('409s on an already-credited txid — never double-credits', async () => {
     existingTx = { id: 't-old', status: 'confirmed', txid: 'realtx1' };
+    ledgerEntry = { id: 'le-1' }; // the ENTRY is the proof, not the status
     await expect(service.manualCredit(dto)).rejects.toThrow(/already credited/);
     expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('credits a coveredByBaseline row — confirmed status but no ledger entry (the folded-delta case)', async () => {
+    existingTx = {
+      id: 't-covered', status: 'confirmed', txid: 'realtx1',
+      raw: { coveredByBaseline: true },
+    };
+    ledgerEntry = null; // recorded but never credited — the repair target
+    const tx = await service.manualCredit(dto);
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, wallet, expect.anything(), 'deposit_confirmed', expect.anything(), 'credit',
+    );
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.confirmed', expect.anything());
   });
 
   it('refuses terminal/needs-review rows (reorged) rather than blindly re-crediting', async () => {
