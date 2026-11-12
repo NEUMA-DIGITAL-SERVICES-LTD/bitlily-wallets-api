@@ -1,6 +1,7 @@
 import { BadGatewayException } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { DepositAddress } from '../../database/entities/deposit-address.entity';
 
 /**
  * The withdrawal path's accounting invariants: debit lands before broadcast,
@@ -592,5 +593,120 @@ describe('TransactionsService.toView', () => {
   it('externalUserId is explicit null when the tx has no wallet (unattributed)', () => {
     const view = service.toView({ id: 't', wallet: null } as any);
     expect(view.externalUserId).toBeNull();
+  });
+});
+
+describe('TransactionsService.manualCredit', () => {
+  const wallet = { id: 'w1' };
+  const dep = {
+    id: 'dep1', address: 'Tdep', asset: 'TRX', reference: null,
+    account: { id: 'a1', wallet, baseAddress: null },
+  };
+  const dto = { address: 'Tdep', asset: 'TRX', txid: 'realtx1' };
+  const chainTx = {
+    txid: 'realtx1', status: 'confirmed' as const, confirmations: 5000,
+    blockNumber: 87910381,
+    outputs: [{ address: 'Tdep', amount: '5.000000' }],
+  };
+
+  let service: TransactionsService;
+  let m: any;
+  let provider: any;
+  let ledger: any;
+  let notifier: any;
+  let existingTx: any;
+  let freshDep: any;
+
+  beforeEach(() => {
+    existingTx = null;
+    freshDep = { ...dep, creditedAmount: '5.000007' };
+    m = {
+      save: jest.fn(async (_e: any, o?: any) => o ?? _e),
+      create: jest.fn((_e: any, o: any) => ({ ...o })),
+      update: jest.fn(),
+      findOne: jest.fn(async (e: any) =>
+        e === DepositAddress ? freshDep : existingTx,
+      ),
+    };
+    provider = {
+      getTransaction: jest.fn().mockResolvedValue({ ...chainTx }),
+      getLatestBlock: jest.fn().mockResolvedValue(87912000),
+      getAddressBalance: jest.fn().mockResolvedValue('10.000007'),
+    };
+    ledger = { postEntry: jest.fn() };
+    notifier = { notify: jest.fn() };
+    const dataSource = {
+      transaction: jest.fn(async (cb: any) => cb(m)),
+      getRepository: jest.fn().mockReturnValue({
+        find: jest.fn().mockResolvedValue([dep]),
+      }),
+    };
+    const config = {
+      get: jest.fn((k: string) =>
+        k === 'confirmations' ? { TRON: 20 } : {},
+      ),
+    };
+    service = new TransactionsService(
+      { findOne: jest.fn(), update: jest.fn() } as any,
+      {} as any, {} as any, provider, ledger, notifier,
+      config as any, dataSource as any, {} as any,
+    );
+  });
+
+  it('credits a verified on-chain tx, advances the baseline, and notifies', async () => {
+    const tx = await service.manualCredit(dto);
+
+    expect(ledger.postEntry).toHaveBeenCalledWith(
+      m, wallet, expect.anything(), 'deposit_confirmed', '5.000000', 'credit',
+    );
+    expect(freshDep.creditedAmount).toBe('10.000007'); // 5.000007 + 5.0, capped at observed
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.confirmed', expect.anything());
+    expect(tx.status).toBe('confirmed');
+    expect(tx.txid).toBe('realtx1');
+  });
+
+  it('409s on an already-credited txid — never double-credits', async () => {
+    existingTx = { id: 't-old', status: 'confirmed', txid: 'realtx1' };
+    await expect(service.manualCredit(dto)).rejects.toThrow(/already credited/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('refuses terminal/needs-review rows (reorged) rather than blindly re-crediting', async () => {
+    existingTx = { id: 't-reorg', status: 'reorged', txid: 'realtx1' };
+    await expect(service.manualCredit(dto)).rejects.toThrow(/review/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('records pending below required confirmations — no credit until the normal path confirms', async () => {
+    provider.getTransaction.mockResolvedValue({ ...chainTx, confirmations: 2 });
+    const tx = await service.manualCredit(dto);
+    expect(tx.status).toBe('pending');
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+    expect(notifier.notify).toHaveBeenCalledWith('deposit.pending', expect.anything());
+  });
+
+  it('rejects a tx that pays nothing to the watched address', async () => {
+    provider.getTransaction.mockResolvedValue({
+      ...chainTx, outputs: [{ address: 'Tother', amount: '5' }],
+    });
+    await expect(service.manualCredit(dto)).rejects.toThrow(/pays nothing/);
+    expect(ledger.postEntry).not.toHaveBeenCalled();
+  });
+
+  it('does not bump the baseline past observed — the swallowed-delta repair case', async () => {
+    freshDep.creditedAmount = '10.000007'; // delta already folded in — repair target
+    await service.manualCredit(dto);
+    // min(observed=10.000007, credited 10.000007 + 5.0) → stays — no overshoot to rebaseline
+    expect(freshDep.creditedAmount).toBe('10.000007');
+    expect(ledger.postEntry).toHaveBeenCalled();
+  });
+
+  it('requires walletId when several watch rows share the address', async () => {
+    const shared = { ...dep, id: 'dep2' };
+    const dataSource = (service as any).dataSource;
+    dataSource.getRepository.mockReturnValue({
+      find: jest.fn().mockResolvedValue([dep, shared]),
+    });
+    await expect(service.manualCredit(dto)).rejects.toThrow(/walletId/);
   });
 });
