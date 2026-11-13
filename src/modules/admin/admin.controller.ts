@@ -143,6 +143,32 @@ class UpdateClientDto {
   rotate?: boolean;
 }
 
+class ManualCreditDto {
+  @ApiProperty({ description: 'Watched deposit address the tx paid' })
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+
+  @ApiProperty({ example: 'TRX' })
+  @IsString()
+  @IsNotEmpty()
+  asset: string;
+
+  @ApiProperty({ description: 'Real on-chain txid — verified before anything is recorded' })
+  @IsString()
+  @IsNotEmpty()
+  txid: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Required when several watch rows share the address (shared ' +
+      'custody) — selects whose row/wallet gets the credit',
+  })
+  @IsString()
+  @IsOptional()
+  walletId?: string;
+}
+
 // ---- response DTOs (wire shapes; entities never leave the service) ----
 
 export class CustodyViewDto {
@@ -539,5 +565,22 @@ export class AdminController {
   @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Unknown or non-parked withdrawal' })
   reject(@Param('id') id: string) {
     return this.transactions.rejectWithdrawal(id).then((tx) => this.transactions.toView(tx));
+  }
+
+  @Post('deposits/credit')
+  @ApiOperation({
+    summary:
+      'Manually credit an on-chain deposit the pipeline missed — verifies ' +
+      'the tx pays the watched address on-chain, records the row, posts ' +
+      'the ledger credit, and advances the baseline so the delta path ' +
+      'cannot re-detect. Idempotent: an already-credited txid is a 409; ' +
+      'below-threshold txs record pending for normal confirmation.',
+  })
+  @ApiOkResponse({ type: TransactionViewDto })
+  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Address not watched, or walletId needed for a shared address' })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Tx not found, failed, or pays nothing to this address' })
+  @ApiConflictResponse({ type: ErrorResponseDto, description: 'Already credited, or exists in a needs-review state (reorged/superseded/failed)' })
+  manualCredit(@Body() dto: ManualCreditDto) {
+    return this.transactions.manualCredit(dto).then((tx) => this.transactions.toView(tx));
   }
 }

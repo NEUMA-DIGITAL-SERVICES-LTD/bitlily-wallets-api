@@ -33,6 +33,8 @@ const MAX_ATTEMPTS = 8;
 @Injectable()
 export class NotifierService {
   private readonly logger = new Logger(NotifierService.name);
+  /** appIds already warned about a missing webhook route (once per appId). */
+  private readonly unroutedWarned = new Set<string>();
 
   constructor(
     private readonly config: ConfigService,
@@ -116,6 +118,15 @@ export class NotifierService {
     if (!(await this.routeFor(row.appId)).url) {
       // No consumer configured (local dev) — leave pending; the sweep would
       // burn attempts pointlessly. Mark sent so the outbox stays clean.
+      // In production this is a silent event drop — scream once per appId.
+      if (process.env.NODE_ENV === 'production' && !this.unroutedWarned.has(row.appId ?? '')) {
+        this.unroutedWarned.add(row.appId ?? '');
+        this.logger.error(
+          `No webhook route for appId=${row.appId ?? '(global)'} — event '${row.event}' ` +
+            `recorded 'sent' but delivered NOWHERE. Set the client's webhookUrl ` +
+            `or MAIN_APP_WEBHOOK_URL.`,
+        );
+      }
       await this.outbox.update(row.id, { status: 'sent', sentAt: new Date() });
       return null;
     }

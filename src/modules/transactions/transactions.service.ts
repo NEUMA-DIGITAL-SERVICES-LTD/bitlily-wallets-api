@@ -10,9 +10,10 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, Like, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { DepositAddress } from '../../database/entities/deposit-address.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
@@ -509,6 +510,149 @@ export class TransactionsService {
       // 'estimation unavailable') — safe and actionable for the caller.
       throw new BadGatewayException(`Fee estimate unavailable — ${errMsg(e)}`);
     }
+  }
+
+  /**
+   * Ops escape hatch — credit an on-chain deposit the pipeline missed or
+   * couldn't attribute (a delta folded into the baseline, a memo-less
+   * shared-address send, a straggler on a retired address). The tx is
+   * verified on-chain (pays the watched address, success status), the row
+   * is recorded, the ledger credit posts, and the baseline advances so
+   * the delta path can't re-detect — all in one transaction.
+   * Idempotent: an already-credited txid is a 409, a pending row advances
+   * in place, a synthetic poll:* placeholder gets rekeyed (adoption
+   * parity with the poller), and below-threshold txs record 'pending'
+   * for the normal confirmation machinery to finish.
+   */
+  async manualCredit(dto: {
+    address: string;
+    asset: string;
+    txid: string;
+    walletId?: string;
+  }): Promise<Transaction> {
+    const asset = getAsset(dto.asset);
+    if (!asset) throw new BadRequestException(`Unsupported asset: ${dto.asset}`);
+    if (!dto.txid?.trim() || dto.txid.includes(':')) {
+      throw new BadRequestException('txid must be a real on-chain id');
+    }
+
+    const deps = await this.dataSource.getRepository(DepositAddress).find({
+      where: { address: dto.address, asset: asset.code },
+      relations: ['account', 'account.wallet'],
+    });
+    const dep = dto.walletId
+      ? deps.find((d) => d.account?.wallet?.id === dto.walletId)
+      : deps.length === 1
+        ? deps[0]
+        : undefined;
+    if (!dep) {
+      throw new NotFoundException(
+        deps.length > 1
+          ? `${deps.length} watch rows hold ${dto.address} — pass walletId to disambiguate`
+          : `No watched ${asset.code} deposit address ${dto.address}`,
+      );
+    }
+    const wallet = dep.account?.wallet;
+    if (!wallet) {
+      throw new BadRequestException(
+        `${dto.address} resolves to no wallet — an unattributed watch row has nothing to credit`,
+      );
+    }
+
+    const chainTx = await this.provider.getTransaction(dto.txid, asset.chain as any, asset);
+    if (!chainTx || chainTx.status === 'failed') {
+      throw new BadRequestException(`tx ${dto.txid} not found (or failed) on ${asset.chain}`);
+    }
+    const amount = chainTx.outputs
+      .filter((o) => o.address.toLowerCase() === dep.address.toLowerCase())
+      .reduce((s, o) => s + parseFloat(o.amount), 0);
+    if (!(amount > 0)) {
+      throw new BadRequestException(`tx ${dto.txid} pays nothing to ${dep.address} in ${asset.code}`);
+    }
+    // History entries carry blockNumber but not always confirmations —
+    // derive from the chain tip (same as the webhook/poller paths).
+    if (chainTx.blockNumber != null && !chainTx.confirmations) {
+      try {
+        const head = await this.provider.getLatestBlock(asset.chain);
+        if (head > 0) chainTx.confirmations = Math.max(0, head - chainTx.blockNumber + 1);
+      } catch { /* keep provider-reported count */ }
+    }
+    const req = this.requiredConfirmations(asset.chain);
+    const confirmed = (chainTx.confirmations ?? 0) >= req;
+
+    const tx = await this.dataSource.transaction(async (m) => {
+      const existing = await m.findOne(Transaction, {
+        where: { txid: dto.txid, address: dep.address, asset: asset.code, direction: 'inbound' },
+      });
+      if (existing && (existing.status === 'confirmed' || existing.status === 'finalized')) {
+        throw new ConflictException(`tx ${dto.txid} is already credited (row ${existing.id})`);
+      }
+      if (existing && existing.status !== 'pending') {
+        // reorged/superseded/failed — a blind credit could contradict a
+        // recorded reversal. These need eyes, not an endpoint.
+        throw new ConflictException(
+          `tx ${dto.txid} exists as '${existing.status}' — review it, don't re-credit`,
+        );
+      }
+      const row =
+        existing ??
+        (await m.findOne(Transaction, {
+          where: {
+            address: dep.address, asset: asset.code, direction: 'inbound',
+            status: 'pending', txid: Like('poll:%'),
+          },
+        })) ??
+        m.create(Transaction, {
+          wallet, direction: 'inbound', chain: asset.chain, asset: asset.code,
+          address: dep.address, reference: dep.reference ?? undefined,
+        });
+      const adopted = !existing && row.txid !== dto.txid;
+      row.wallet = wallet;
+      row.direction = 'inbound';
+      row.chain = asset.chain;
+      row.asset = asset.code;
+      row.address = dep.address;
+      row.txid = dto.txid;
+      row.amount = amount.toFixed(asset.decimals);
+      row.confirmations = chainTx.confirmations ?? 0;
+      row.requiredConfirmations = req;
+      row.blockNumber = chainTx.blockNumber ?? row.blockNumber;
+      row.status = confirmed ? 'confirmed' : 'pending';
+      row.raw = {
+        ...((row.raw as object) ?? {}),
+        detectedVia: 'manual-credit',
+        ...(adopted ? { adoptedSynthetic: true } : {}),
+      } as any;
+      const saved = await m.save(row);
+      if (!confirmed) return saved;
+      await this.ledger.postEntry(
+        m, wallet, saved, 'deposit_confirmed', saved.amount, 'credit',
+      );
+      // Advance the baseline by the credited amount but never past the
+      // observed balance — a tx already folded into creditedAmount (the
+      // swallowed-delta repair case) needs no bump; overshooting would
+      // just be rebaselined anyway. Shared-custody rows never run delta
+      // detection — nothing to advance there.
+      if (!dep.account.baseAddress) {
+        const observed = await this.provider.getAddressBalance(dep.address, asset);
+        const fresh = await m.findOne(DepositAddress, {
+          where: { id: dep.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (fresh) {
+          fresh.creditedAmount = Math.min(
+            parseFloat(observed),
+            parseFloat(fresh.creditedAmount) + amount,
+          ).toFixed(asset.decimals);
+          await m.save(fresh);
+        }
+      }
+      return saved;
+    });
+    await this.notifier.notify(
+      confirmed ? 'deposit.confirmed' : 'deposit.pending', tx,
+    );
+    return tx;
   }
 
   requiredConfirmations(chain: string): number {
