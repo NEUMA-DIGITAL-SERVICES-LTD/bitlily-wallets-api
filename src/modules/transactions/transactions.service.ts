@@ -14,6 +14,7 @@ import { DataSource, Like, Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Transaction } from '../../database/entities/transaction.entity';
 import { DepositAddress } from '../../database/entities/deposit-address.entity';
+import { LedgerEntry } from '../../database/entities/ledger-entry.entity';
 import { Wallet } from '../../database/entities/wallet.entity';
 import { WalletAccount } from '../../database/entities/wallet-account.entity';
 import { CustodyAccount } from '../../database/entities/custody-account.entity';
@@ -584,15 +585,25 @@ export class TransactionsService {
       const existing = await m.findOne(Transaction, {
         where: { txid: dto.txid, address: dep.address, asset: asset.code, direction: 'inbound' },
       });
-      if (existing && (existing.status === 'confirmed' || existing.status === 'finalized')) {
-        throw new ConflictException(`tx ${dto.txid} is already credited (row ${existing.id})`);
-      }
       if (existing && existing.status !== 'pending') {
-        // reorged/superseded/failed — a blind credit could contradict a
-        // recorded reversal. These need eyes, not an endpoint.
-        throw new ConflictException(
-          `tx ${dto.txid} exists as '${existing.status}' — review it, don't re-credit`,
-        );
+        if (existing.status !== 'confirmed' && existing.status !== 'finalized') {
+          // reorged/superseded/failed — a blind credit could contradict a
+          // recorded reversal. These need eyes, not an endpoint.
+          throw new ConflictException(
+            `tx ${dto.txid} exists as '${existing.status}' — review it, don't re-credit`,
+          );
+        }
+        // confirmed/finalized is NOT proof of a credit: the delta path
+        // records coveredByBaseline rows as confirmed-without-credit when
+        // it believes the funds are inside the baseline (the exact state
+        // this endpoint exists to repair). Check the ENTRY, not the label.
+        const hasCredit = await m.findOne(LedgerEntry, {
+          where: { transaction: { id: existing.id }, kind: 'deposit_confirmed' },
+        });
+        if (hasCredit) {
+          throw new ConflictException(`tx ${dto.txid} is already credited (row ${existing.id})`);
+        }
+        // Fall through — a recorded-but-uncredited row gets its credit below.
       }
       const row =
         existing ??
