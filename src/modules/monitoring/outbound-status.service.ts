@@ -104,6 +104,7 @@ export class OutboundStatusService {
               }
             });
             if (internal) {
+              await this.restoreSweepWatermark(tx);
               await this.notifyInternal(tx, 'sweep.failed', 'KMS request rejected/dropped');
             } else {
               await this.notifier.notify('withdrawal.failed', tx);
@@ -155,6 +156,7 @@ export class OutboundStatusService {
           tx.status = 'failed';
           await this.txs.save(tx);
           await this.unaccountInternalInflow(tx); // broadcast never landed
+          await this.restoreSweepWatermark(tx);
           if (this.isInternal(tx)) {
             await this.notifyInternal(tx, 'sweep.failed', 'never appeared on-chain');
           } else {
@@ -221,6 +223,7 @@ export class OutboundStatusService {
       tx.status = 'failed';
       await this.txs.save(tx);
       await this.unaccountInternalInflow(tx);
+      await this.restoreSweepWatermark(tx);
       await this.notifyInternal(
         tx, 'sweep.failed', `KMS request unsigned >${INTERNAL_FAIL_MS / 60000}m — failed for retry`,
       );
@@ -343,6 +346,48 @@ export class OutboundStatusService {
       await m.update(Transaction, tx.id, { raw });
     });
     delete (tx.raw as any).inflowAccounted;
+  }
+
+  /**
+   * Inverse of the scheduler's optimistic decrement (sweep-scheduler):
+   * when a sweep send is queued the source deposit's creditedAmount is
+   * moved down by the send amount and the attempt row is tagged
+   * `watermarkApplied`. If the send dies before broadcast the balance
+   * never drops, so the watermark must be given back — otherwise the
+   * poller reports a phantom deposit delta every cycle. Distinct from
+   * unaccountInternalInflow, which reverses DESTINATION-side bumps.
+   * Idempotent via `watermarkRestored`.
+   */
+  private async restoreSweepWatermark(tx: Transaction): Promise<void> {
+    const ref = tx.reference ?? '';
+    if (!ref.startsWith('sweep:')) return;
+    const depId = ref.split(':')[1];
+    if (!depId) return;
+    const decimals = getAsset(tx.asset)?.decimals ?? 8;
+    await this.em.transaction(async (m) => {
+      const fresh = await m.findOne(Transaction, {
+        where: { id: tx.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const raw = (fresh?.raw as any) ?? {};
+      if (!raw.watermarkApplied || raw.watermarkRestored) return;
+      const dep = await m.findOne(DepositAddress, {
+        where: { id: depId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (dep) {
+        dep.creditedAmount = (
+          parseFloat(dep.creditedAmount) + parseFloat(tx.amount)
+        ).toFixed(decimals);
+        await m.save(dep);
+      }
+      await m.update(Transaction, tx.id, {
+        raw: { ...raw, watermarkRestored: true },
+      });
+      this.logger.log(
+        `Restored sweep watermark +${tx.amount} ${tx.asset} on dep ${depId} — send never broadcast`,
+      );
+    });
   }
 
   private requiredConfirmations(chain: string): number {

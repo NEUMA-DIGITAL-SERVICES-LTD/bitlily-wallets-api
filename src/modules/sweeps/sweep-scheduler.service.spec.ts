@@ -37,7 +37,11 @@ describe('SweepSchedulerService', () => {
   beforeEach(() => {
     addresses = { find: jest.fn().mockResolvedValue([]), update: jest.fn() };
     custody = { find: jest.fn().mockResolvedValue([]) };
-    txs = { find: jest.fn().mockResolvedValue([]) };
+    txs = {
+      find: jest.fn().mockResolvedValue([]),
+      findOne: jest.fn().mockResolvedValue({ id: 'tx-a1', raw: {} }),
+      update: jest.fn(),
+    };
     sweeps = {
       sweepAddress: jest.fn().mockResolvedValue({ txids: ['t1'], amount: '95' }),
     };

@@ -128,6 +128,21 @@ export class SweepSchedulerService {
             parseFloat(dep.creditedAmount) - parseFloat(r.amount),
           ).toFixed(decimals);
           await this.addresses.update(dep.id, { creditedAmount: next });
+          // Tag the attempt row so outbound-status knows this decrement is
+          // owed back if the send dies before broadcast — without it a dead
+          // send leaves the watermark short and the poller reports a
+          // phantom deposit delta forever.
+          const attempt = await this.txs.findOne({
+            where: { reference: Like(`sweep:${dep.id}:%`), status: 'pending' },
+          });
+          if (attempt) {
+            await this.txs.update(attempt.id, {
+              raw: {
+                ...((attempt.raw as object) ?? {}),
+                watermarkApplied: true,
+              },
+            });
+          }
         }
         swept++;
       } catch (e) {
