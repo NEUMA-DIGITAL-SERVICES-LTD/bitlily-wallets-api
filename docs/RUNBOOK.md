@@ -58,6 +58,24 @@ Check, in order:
    `testnetContract`/`contract` — a different contract's tokens on the
    same address are invisible (by design). Check `assets.ts`.
 
+5. **A `poll:<addr>:<asset>:<balance>` row sits `pending` forever — no such
+   tx exists on-chain.** The synthetic row's `amount` is a LIVE delta
+   (`observed − credited_amount`), recomputed every poll cycle — it is
+   not a deposit. A persistent nonzero value with no matching chain tx
+   means the `credited_amount` watermark drifted: seen live when a KMS
+   sweep died pre-broadcast and its optimistic decrement was never given
+   back (fixed — outbound-status now restores `watermarkApplied` sends;
+   older rows still drift). Verify:
+   ```sql
+   SELECT credited_amount FROM deposit_addresses WHERE address='<addr>' AND asset='<ASSET>';
+   -- and sum ledger-side credits to compare against the chain balance
+   ```
+   Repair: `POST /api/v1/admin/deposit-addresses/reconcile {address, asset}` —
+   409s with the txids if genuinely unrecorded inbound exists (credit those
+   via `/admin/deposits/credit` first), else sets `credited_amount` to the
+   observed balance and retires the stale synthetic rows. Do NOT hand-edit
+   `credited_amount` below ledger-proven credits — that hides real deposits.
+
 ## 2. Withdrawal stuck `pending`
 
 Symptom: `transactions.status='pending'` and txid is `pending:<uuid>`.
