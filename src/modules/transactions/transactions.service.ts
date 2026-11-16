@@ -666,6 +666,103 @@ export class TransactionsService {
     return tx;
   }
 
+  /**
+   * Repair a drifted creditedAmount watermark — the operational fix for
+   * residue the ledger can't see (a dead sweep's orphan decrement, a
+   * manual edit). Fail-closed: refuses while any on-chain tx paying the
+   * address is unrecorded, because folding real deposits into the
+   * baseline would hide them forever. Once history proves everything
+   * inbound is recorded, marker := observed is exact truth, and stale
+   * synthetic `poll:` pending rows are retired (they can only ever
+   * describe a delta that no longer exists).
+   */
+  async reconcileDepositAddress(dto: { address: string; asset: string }) {
+    const asset = getAsset(dto.asset);
+    if (!asset) {
+      throw new BadRequestException(`Unknown asset ${dto.asset}`);
+    }
+    const dep = await this.dataSource.getRepository(DepositAddress).findOne({
+      where: { address: dto.address, asset: asset.code },
+    });
+    if (!dep) {
+      throw new NotFoundException(
+        `No watched ${asset.code} deposit address ${dto.address}`,
+      );
+    }
+    if (dep.account?.baseAddress) {
+      throw new BadRequestException(
+        `${dto.address} is a shared-custody row — delta detection doesn't apply; nothing to reconcile`,
+      );
+    }
+    if (!this.provider.getAddressTransactions) {
+      throw new BadRequestException(
+        `Provider cannot list ${asset.chain} address history — cannot prove no ` +
+        `unrecorded inbound tx exists; refusing to reconcile`,
+      );
+    }
+
+    const observed = await this.provider.getAddressBalance(dep.address, asset);
+    const history =
+      (await this.provider.getAddressTransactions(dep.address, asset, 100)) ?? [];
+    const paying = new Set(
+      history
+        .filter((t) =>
+          t.outputs.some(
+            (o) => o.address.toLowerCase() === dep.address.toLowerCase(),
+          ),
+        )
+        .map((t) => t.txid),
+    );
+    const recorded = new Set(
+      (
+        await this.txs.find({
+          where: { address: dep.address, asset: asset.code, direction: 'inbound' },
+          select: ['txid'],
+        })
+      ).map((r) => r.txid),
+    );
+    const unrecorded = [...paying].filter((t) => !recorded.has(t));
+    if (unrecorded.length) {
+      throw new ConflictException(
+        `${unrecorded.length} unrecorded inbound tx(s) pay ${dep.address} — ` +
+        `credit them via /admin/deposits/credit before reconciling: ` +
+        unrecorded.join(', '),
+      );
+    }
+
+    return this.dataSource.transaction(async (m) => {
+      const fresh = await m.findOne(DepositAddress, {
+        where: { id: dep.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const previousCredited = fresh.creditedAmount;
+      fresh.creditedAmount = parseFloat(observed).toFixed(asset.decimals);
+      await m.save(fresh);
+      const cleared = await m
+        .createQueryBuilder()
+        .update(Transaction)
+        .set({ status: 'superseded' })
+        .where(
+          `address = :a AND asset = :as AND direction = 'inbound' ` +
+          `AND status = 'pending' AND txid LIKE 'poll:%'`,
+          { a: dep.address, as: asset.code },
+        )
+        .execute();
+      this.logger.log(
+        `Reconciled ${dep.address} ${asset.code}: credited ${previousCredited} → ` +
+        `${fresh.creditedAmount} (observed ${observed}); retired ${cleared.affected ?? 0} synthetic row(s)`,
+      );
+      return {
+        address: dep.address,
+        asset: asset.code,
+        observedBalance: observed,
+        previousCredited,
+        creditedAmount: fresh.creditedAmount,
+        staleSyntheticRowsRetired: cleared.affected ?? 0,
+      };
+    });
+  }
+
   requiredConfirmations(chain: string): number {
     const map = this.config.get<Record<string, number>>('confirmations') ?? {};
     return map[chain] ?? 1;

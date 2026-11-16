@@ -143,6 +143,18 @@ class UpdateClientDto {
   rotate?: boolean;
 }
 
+class ReconcileAddressDto {
+  @ApiProperty({ description: 'Watched deposit address to reconcile' })
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+
+  @ApiProperty({ example: 'TRX' })
+  @IsString()
+  @IsNotEmpty()
+  asset: string;
+}
+
 class ManualCreditDto {
   @ApiProperty({ description: 'Watched deposit address the tx paid' })
   @IsString()
@@ -582,5 +594,22 @@ export class AdminController {
   @ApiConflictResponse({ type: ErrorResponseDto, description: 'Already credited, or exists in a needs-review state (reorged/superseded/failed)' })
   manualCredit(@Body() dto: ManualCreditDto) {
     return this.transactions.manualCredit(dto).then((tx) => this.transactions.toView(tx));
+  }
+
+  @Post('deposit-addresses/reconcile')
+  @ApiOperation({
+    summary:
+      'Reconcile a deposit address watermark with chain truth — refuses ' +
+      '(409, with the txids) while any unrecorded inbound tx pays the ' +
+      'address, then sets creditedAmount = observed balance and retires ' +
+      'stale synthetic pending rows. The repair for watermark drift: a ' +
+      'sweep that died before broadcast, or any manual-marker incident.',
+  })
+  @ApiOkResponse({ description: 'Observed balance, previous/new watermark, retired synthetic row count' })
+  @ApiNotFoundResponse({ type: ErrorResponseDto, description: 'Address not watched for this asset' })
+  @ApiBadRequestResponse({ type: ErrorResponseDto, description: 'Shared-custody row, or provider cannot verify history' })
+  @ApiConflictResponse({ type: ErrorResponseDto, description: 'Unrecorded inbound txs exist — credit them first' })
+  reconcileDepositAddress(@Body() dto: ReconcileAddressDto) {
+    return this.transactions.reconcileDepositAddress(dto);
   }
 }

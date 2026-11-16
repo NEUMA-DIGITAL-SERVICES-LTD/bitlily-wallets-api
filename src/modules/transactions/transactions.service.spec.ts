@@ -727,3 +727,81 @@ describe('TransactionsService.manualCredit', () => {
     await expect(service.manualCredit(dto)).rejects.toThrow(/walletId/);
   });
 });
+
+describe('TransactionsService.reconcileDepositAddress', () => {
+  const dep = {
+    id: 'dep1', address: 'Tdep', asset: 'TRX',
+    account: { id: 'a1', wallet: { id: 'w1' }, baseAddress: null },
+  };
+  const dto = { address: 'Tdep', asset: 'TRX' };
+
+  let service: TransactionsService;
+  let m: any;
+  let provider: any;
+  let txs: any;
+  let freshDep: any;
+  let history: any[];
+  let recorded: any[];
+
+  beforeEach(() => {
+    freshDep = { ...dep, creditedAmount: '6.000000' };
+    history = [
+      { txid: 'rec1', outputs: [{ address: 'Tdep', amount: '5' }] },
+      { txid: 'rec2', outputs: [{ address: 'Tdep', amount: '5.000007' }] },
+    ];
+    recorded = [{ txid: 'rec1' }, { txid: 'rec2' }];
+    m = {
+      save: jest.fn(async (e: any) => e),
+      findOne: jest.fn(async () => freshDep),
+      createQueryBuilder: jest.fn().mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      }),
+    };
+    provider = {
+      getAddressBalance: jest.fn().mockResolvedValue('10.000007'),
+      getAddressTransactions: jest.fn(async () => history),
+    };
+    txs = { find: jest.fn(async () => recorded) };
+    const dataSource = {
+      transaction: jest.fn(async (cb: any) => cb(m)),
+      getRepository: jest.fn().mockReturnValue({
+        findOne: jest.fn().mockResolvedValue(dep),
+      }),
+    };
+    service = new TransactionsService(
+      txs as any, {} as any, {} as any, provider,
+      { postEntry: jest.fn() } as any, { notify: jest.fn() } as any,
+      { get: jest.fn().mockReturnValue({}) } as any,
+      dataSource as any, {} as any,
+    );
+  });
+
+  it('sets the watermark to the observed balance and retires synthetic pending rows', async () => {
+    const r = await service.reconcileDepositAddress(dto);
+    expect(freshDep.creditedAmount).toBe('10.000007');
+    expect(r.previousCredited).toBe('6.000000');
+    expect(r.staleSyntheticRowsRetired).toBe(1);
+  });
+
+  it('refuses while unrecorded inbound txs exist — those need crediting, not folding', async () => {
+    recorded = [{ txid: 'rec1' }]; // rec2 is on-chain but never recorded
+    await expect(service.reconcileDepositAddress(dto)).rejects.toThrow(/rec2/);
+    expect(m.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it('refuses a shared-custody row — delta detection never applies there', async () => {
+    const dataSource = (service as any).dataSource;
+    dataSource.getRepository.mockReturnValue({
+      findOne: jest.fn().mockResolvedValue({ ...dep, account: { baseAddress: 'shared' } }),
+    });
+    await expect(service.reconcileDepositAddress(dto)).rejects.toThrow(/shared-custody/);
+  });
+
+  it('refuses when the provider cannot list history — cannot prove safety', async () => {
+    delete (provider as any).getAddressTransactions;
+    await expect(service.reconcileDepositAddress(dto)).rejects.toThrow(/cannot list/);
+  });
+});

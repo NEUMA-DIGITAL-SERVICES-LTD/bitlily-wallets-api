@@ -360,6 +360,8 @@ peer IP — the gate can't distinguish them. And `.env` edits require
 | `POST /withdrawals/{id}/approve` | path id | Broadcast a parked `requires_approval` withdrawal (treasury gate still applies) |
 | `POST /withdrawals/{id}/reject` | path id | Refuse it — the debit reverses, user balance restored |
 | `POST /sweep` | `depositAddressId` (UUID) | Consolidate a deposit address → treasury, KMS-signed. Token sweeps on gas-hungry chains (ERC-20, SPL) may need a native top-up first |
+| `POST /deposits/credit` | `address`, `asset`, `txid`, `walletId?` | Manually credit an on-chain deposit the pipeline missed — verifies the tx pays the address on-chain, records the row, posts the ledger credit, advances the baseline. 409 on duplicate or needs-review state (reorged/superseded/failed) |
+| `POST /deposit-addresses/reconcile` | `address`, `asset` | Repair a drifted `credited_amount` watermark — refuses (409 + the txids) while any unrecorded inbound tx pays the address (credit those via `/deposits/credit` first); otherwise sets marker = observed balance and retires stale `poll:` pending rows |
 | `POST /address-pool` | `entries[]: {signatureId, address}` | Bulk-seed pooled SOL deposit addresses — deduped per unique address |
 | `GET /address-pool/stats` | — | Pool health per chain (`free` vs `assigned`). Low `free` → reseed before SOL wallet provisioning starts failing 503 |
 

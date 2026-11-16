@@ -1,5 +1,6 @@
 import { OutboundStatusService } from './outbound-status.service';
 import { Transaction } from '../../database/entities/transaction.entity';
+import { DepositAddress } from '../../database/entities/deposit-address.entity';
 
 /**
  * The outbound sweeper is the truth-teller for payouts: KMS async signing
@@ -256,6 +257,55 @@ describe('OutboundStatusService', () => {
       Transaction, 'tx-1',
       expect.objectContaining({ raw: { internal: 'sweep' } }),
     );
+  });
+
+  it('restores the scheduler watermark when a tagged sweep dies before broadcast', async () => {
+    const dep = { id: 'dep-1', creditedAmount: '0.00010000' };
+    m.findOne.mockImplementation(async (e: any, q: any) =>
+      e === DepositAddress
+        ? dep
+        : { id: 'tx-1', raw: { internal: 'sweep', watermarkApplied: true } },
+    );
+    queue({
+      ...baseTx,
+      txid: 'pending:abc',
+      amount: '0.005',
+      reference: 'sweep:dep-1:a1',
+      raw: { kmsRequestId: 'kms-1', internal: 'sweep', watermarkApplied: true },
+    });
+    provider.getPendingSignature.mockResolvedValue(null); // dropped, never broadcast
+
+    await service.sweep();
+
+    expect(dep.creditedAmount).toBe('0.005100000000000000');
+    expect(m.update).toHaveBeenCalledWith(
+      Transaction, 'tx-1',
+      expect.objectContaining({
+        raw: expect.objectContaining({ watermarkRestored: true }),
+      }),
+    );
+    expect(notifier.notifyEvent).toHaveBeenCalledWith(
+      'sweep.failed', expect.objectContaining({ reason: expect.any(String) }),
+    );
+  });
+
+  it('leaves the watermark alone when no decrement was applied (untagged row)', async () => {
+    const dep = { id: 'dep-1', creditedAmount: '0.00010000' };
+    m.findOne.mockImplementation(async (e: any) =>
+      e === DepositAddress ? dep : { id: 'tx-1', raw: { internal: 'sweep' } },
+    );
+    queue({
+      ...baseTx,
+      txid: 'pending:abc',
+      amount: '0.005',
+      reference: 'sweep:dep-1:a1',
+      raw: { kmsRequestId: 'kms-1', internal: 'sweep' }, // no watermarkApplied
+    });
+    provider.getPendingSignature.mockResolvedValue(null);
+
+    await service.sweep();
+
+    expect(dep.creditedAmount).toBe('0.00010000');
   });
 
   it('stalled internal sends alert via ops event, not the tenant webhook', async () => {
