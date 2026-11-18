@@ -34,13 +34,27 @@ export class KmsVerifyController {
    *            → KMS calls {base}/api/v1/kms/verify/{KMS_VERIFY_TOKEN}/{txId}
    * A tokenless verify/{txId} route stays for dev when KMS_VERIFY_TOKEN unset.
    */
-  @Get(['verify/:requestId', 'verify/:token/:requestId'])
+  @Get(['verify/:requestId', 'verify/*'])
   @Public()
   async verify(
-    @Param('requestId') requestId: string,
-    @Param('token') pathToken?: string,
+    @Param() params: Record<string, string>,
     @Query('token') queryToken?: string,
   ) {
+    // verify/* captures the whole tail — the daemon string-concats
+    // externalUrl + '/' + txId, so a KMS_VERIFY_TOKEN containing '/' or
+    // other URL-unsafe characters arrives as MULTIPLE path segments and
+    // would 404 a :token/:requestId route (seen live: base64-style token
+    // → every sweep request 'not found on external system' → never
+    // signed → expired). The only reliable split: LAST segment is the
+    // requestId, everything before it is the token.
+    let requestId = params.requestId;
+    let pathToken: string | undefined;
+    const tail = params['0'];
+    if (tail != null) {
+      const parts = tail.split('/');
+      requestId = parts.pop() ?? requestId;
+      pathToken = parts.length ? parts.join('/') : undefined;
+    }
     const expected =
       process.env.KMS_VERIFY_TOKEN ?? this.config.get<string>('kmsVerifyToken');
     if (expected) {
