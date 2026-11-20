@@ -1,4 +1,5 @@
-import { Controller, Get, NotFoundException, Param, Query, UnauthorizedException } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Query, Req, UnauthorizedException } from '@nestjs/common';
+import { Request } from 'express';
 import { ConfigService } from '@nestjs/config';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -36,25 +37,22 @@ export class KmsVerifyController {
    */
   @Get(['verify/:requestId', 'verify/*'])
   @Public()
-  async verify(
-    @Param() params: Record<string, string>,
-    @Query('token') queryToken?: string,
-  ) {
-    // verify/* captures the whole tail — the daemon string-concats
-    // externalUrl + '/' + txId, so a KMS_VERIFY_TOKEN containing '/' or
-    // other URL-unsafe characters arrives as MULTIPLE path segments and
-    // would 404 a :token/:requestId route (seen live: base64-style token
-    // → every sweep request 'not found on external system' → never
-    // signed → expired). The only reliable split: LAST segment is the
-    // requestId, everything before it is the token.
-    let requestId = params.requestId;
-    let pathToken: string | undefined;
-    const tail = params['0'];
-    if (tail != null) {
-      const parts = tail.split('/');
-      requestId = parts.pop() ?? requestId;
-      pathToken = parts.length ? parts.join('/') : undefined;
-    }
+  async verify(@Req() req: Request, @Query('token') queryToken?: string) {
+    // The daemon string-concats externalUrl + '/' + txId — a token with
+    // '/' or other URL-unsafe chars arrives as MULTIPLE path segments.
+    // Parse req.path rather than route params: wildcard capture keys
+    // differ across Nest/Express versions (params['0'] vs splat), and a
+    // missed key silently becomes supplied=undefined → 401 for a CORRECT
+    // token (seen live). Split rule: LAST segment = requestId, the rest = token.
+    const idx = req.path.indexOf('/verify/');
+    const tail = idx >= 0 ? req.path.slice(idx + '/verify/'.length) : '';
+    const parts = tail.split('/').filter(Boolean);
+    const requestId = parts.length
+      ? decodeURIComponent(parts.pop()!)
+      : undefined;
+    const pathToken = parts.length
+      ? parts.map(decodeURIComponent).join('/')
+      : undefined;
     const expected =
       process.env.KMS_VERIFY_TOKEN ?? this.config.get<string>('kmsVerifyToken');
     if (expected) {
