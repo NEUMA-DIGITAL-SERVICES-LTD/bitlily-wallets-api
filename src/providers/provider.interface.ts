@@ -137,6 +137,14 @@ export interface BlockchainProvider {
    */
   getPendingSignature?(requestId: string): Promise<PendingSignatureStatus | null>;
 
+  /**
+   * KMS-only: delete a pending signature request we've given up on. A
+   * corpse left in the provider's queue is re-polled by the signing
+   * daemon every cycle and re-failed at full log verbosity — observed:
+   * one daemon wrote ~130 GB of axios dumps and filled the VPS disk.
+   */
+  deletePendingSignature?(requestId: string): Promise<void>;
+
   /** Register address monitoring (provider-side webhook subscription). */
   createAddressSubscription?(address: string, chain: Chain): Promise<SubscriptionResult>;
 

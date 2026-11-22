@@ -838,6 +838,21 @@ export class TatumProvider implements BlockchainProvider {
   }
 
   /**
+   * Remove a dead pending request so the KMS daemon stops re-polling it.
+   * Best-effort: an absent request is the goal state, and any other
+   * failure must not break the caller's fail path — warn and move on.
+   */
+  async deletePendingSignature(requestId: string): Promise<void> {
+    try {
+      await this.http.delete(`/v3/kms/${requestId}`);
+    } catch (err: any) {
+      if (err.response?.status === 404) return;
+      if (err.response?.data?.errorCode === 'kms.missing') return;
+      this.logger.warn(`KMS request ${requestId} delete failed: ${err?.message}`);
+    }
+  }
+
+  /**
    * UTXO fee rate in sats/byte — Tatum's fee endpoint returns per-byte
    * recommendations; floor at 1 to never dust-fee a real send, and a
    * conservative 10 fallback if the endpoint is unreachable.
