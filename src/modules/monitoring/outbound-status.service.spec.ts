@@ -35,6 +35,7 @@ describe('OutboundStatusService', () => {
     txs = { find: jest.fn(), save: jest.fn(async (t: any) => t) };
     provider = {
       getPendingSignature: jest.fn(),
+      deletePendingSignature: jest.fn(),
       getTransaction: jest.fn(),
       getLatestBlock: jest.fn().mockResolvedValue(1000),
     };
@@ -349,6 +350,10 @@ describe('OutboundStatusService', () => {
       'sweep.failed',
       expect.objectContaining({ transactionId: 'tx-1' }),
     );
+    // The corpse must leave Tatum's pending queue — the signing daemon
+    // re-polls it every cycle and re-fails at full axios verbosity
+    // (the 130 GB disk-fill incident).
+    expect(provider.deletePendingSignature).toHaveBeenCalledWith('kms-1');
   });
 
   it('never auto-fails a user withdrawal — double-send risk is real there', async () => {

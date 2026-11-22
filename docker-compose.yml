@@ -1,6 +1,17 @@
+x-logging: &default-logging
+  # Tatum's KMS daemon dumps a full axios object per failed verify — at
+  # --period=10s that alone grew one json-file log past 130 GB and filled
+  # the VPS disk. Cap every service; never let a log eat the database's
+  # filesystem again.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
+    logging: *default-logging
     environment:
       POSTGRES_DB: bitlily_wallets_api
       POSTGRES_USER: bitlily_wallets_api
@@ -17,6 +28,7 @@ services:
 
   api:
     build: .
+    logging: *default-logging
     depends_on:
       db:
         condition: service_healthy
@@ -32,6 +44,7 @@ services:
     image: tatumio/tatum-kms
     container_name: bitlily-kms
     restart: unless-stopped
+    logging: *default-logging
     env_file:
       - .env
     command: daemon --externalUrl=http://api:3100/api/v1/kms/verify/${KMS_VERIFY_TOKEN} --chain=BTC,LTC,ETH,MATIC,TRON,SOL,BSC,DOGE --period=10

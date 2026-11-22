@@ -224,6 +224,7 @@ export class OutboundStatusService {
       await this.txs.save(tx);
       await this.unaccountInternalInflow(tx);
       await this.restoreSweepWatermark(tx);
+      await this.releaseKmsRequest(kmsRequestId);
       await this.notifyInternal(
         tx, 'sweep.failed', `KMS request unsigned >${INTERNAL_FAIL_MS / 60000}m — failed for retry`,
       );
@@ -246,6 +247,18 @@ export class OutboundStatusService {
       `(request ${kmsRequestId}) — signing daemon down or request expired. ` +
       `Check the tatum-kms container and Tatum's pending queue.`,
     );
+  }
+
+  /**
+   * Once we give up on a KMS request it must leave the provider's pending
+   * queue — the signing daemon re-polls every corpse every poll period
+   * and logs each failure at full axios-object verbosity (the 130 GB
+   * disk-fill incident on the wallet VPS). Best-effort cleanup.
+   */
+  private async releaseKmsRequest(kmsRequestId: string): Promise<void> {
+    try {
+      await this.provider.deletePendingSignature?.(kmsRequestId);
+    } catch { /* cleanup must never break the fail path */ }
   }
 
   /**
